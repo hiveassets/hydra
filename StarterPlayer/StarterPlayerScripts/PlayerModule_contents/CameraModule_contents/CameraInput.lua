@@ -3,7 +3,7 @@
     Path: StarterPlayer → StarterPlayerScripts → PlayerModule → CameraModule
     Parent: CameraModule
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-20 20:00:09
+    Exported: 2026-09-20 22:14:29
 ]]
 --!nonstrict
 local ContextActionService = game:GetService("ContextActionService")

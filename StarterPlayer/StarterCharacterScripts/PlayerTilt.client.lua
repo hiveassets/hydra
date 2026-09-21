@@ -4,7 +4,7 @@
     Parent: StarterCharacterScripts
     Properties:
         Disabled: false
-    Exported: 2026-09-20 20:00:10
+    Exported: 2026-09-20 22:14:30
 ]]
 local RunService = game:GetService("RunService")
 

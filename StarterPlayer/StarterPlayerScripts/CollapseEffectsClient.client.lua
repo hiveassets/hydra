@@ -4,71 +4,62 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
-    Exported: 2026-09-20 20:00:09
+    Exported: 2026-09-20 22:14:29
 ]]
 --[[
-	CollapseEffectsClient
+	CollapseEffectsClient (LocalScript) — StarterPlayerScripts
 
-	Owns every visual effect tied to the collapse telegraph and the
-	collapse itself: ramping Lighting.ColorCorrectionEffect during the
-	telegraph, the instant grey cut when a collapse actually fires, and
-	the ease back to baseline once it resolves.
+	Everything you see during a collapse that isn't a ball: the colour
+	grade ramping through the countdown, the instant grey cut when it
+	fires, the camera shake, the FOV push, and the ease back to normal
+	afterwards.
 
-	WHY THIS LIVES ON THE CLIENT (not BallManager on the server):
-	BallManager used to tween the shared ColorCorrectionEffect directly
-	from the server. That works, but every step of that tween has to
-	travel server Heartbeat -> network -> this client's own render frame,
-	and that hop isn't synced to the client's frame timing. Under any
-	real network variance (and this game's server is already busy
-	replicating a constantly-spawning ball queue), the property updates
-	arrive in uneven little bursts instead of a steady stream — which
-	reads as jitter no matter how clean the tween itself is.
+	WHAT CHANGED
 
-	Running the tween here instead means nothing has to cross the
-	network mid-tween: TweenService interpolates every property change
-	on the same machine that's about to render it, so it's as smooth as
-	the client's own frame rate allows.
+	This script used to be a dumb tweener driven by a RemoteEvent, and it
+	existed because the server tweening a shared ColorCorrectionEffect
+	arrives in uneven bursts — fine in principle, jittery in practice.
+	The reasoning holds, there's just no server left in the loop: the
+	collapse is this player's own board, so ClientBoard fires a plain
+	BindableEvent and everything below runs on the machine that's about
+	to render it.
 
-	Camera shake also lives here now (see the "camera shake" section
-	below) — a player's Camera instance isn't accessible from the server
-	at all, even in principle, so this was always going to be the only
-	place it could live. FOV shift (see the "FOV shift" section below)
-	follows the same reasoning.
+	That also means the target values are worked out here, from
+	BoardConfig, rather than being computed server-side and sent over. It
+	reads better anyway: the ramp knows what it's ramping towards.
 
-	PROTOCOL (fired by BallManager on ReplicatedStorage.CollapseVisualEffects):
-		"telegraphStart",  duration, targetSaturation, targetContrast, targetTintColor, targetShakeIntensity
-		"telegraphCancel", fadeTime, baseSaturation,   baseContrast,   baseTint
-		"collapseCut",     targetContrast, targetTintColor   -- instant, no tween
-		"collapseResolve", fadeTime, targetSaturation, targetContrast
-
-	The server always sends already-computed target values, never raw
-	tuning constants — this script is a dumb tweener with no tuning
-	knobs of its own. Even camera shake's intensity comes from the
-	server (COLLAPSE_TELEGRAPH_SHAKE_INTENSITY in BallManager.lua) so
-	every telegraph tuning value lives in exactly one place.
+	The baseline it eases back to is whatever the map's own colour
+	grading was before the telegraph started, captured at that moment
+	rather than assumed, so Studio-side grading survives a collapse.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService")
 local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 
-local vfx = ReplicatedStorage:WaitForChild("CollapseVisualEffects")
+local Config = require(ReplicatedStorage:WaitForChild("BoardConfig"))
+local Protocol = require(ReplicatedStorage:WaitForChild("BoardProtocol"))
 local FOVController = require(ReplicatedStorage:WaitForChild("FOVController"))
+local ClientBoard = require(script.Parent:WaitForChild("ClientBoard"))
 
--- Roblox's default Name for a fresh ColorCorrectionEffect instance is
--- "ColorCorrectionEffect", and BallManager never renames the one it
--- creates — so WaitForChild-by-name here is safe and means this script
--- doesn't have to poll for it if it hasn't replicated down yet.
-local cc = Lighting:FindFirstChildOfClass("ColorCorrectionEffect") or Lighting:WaitForChild("ColorCorrectionEffect", 5)
+local V = Config.COLLAPSE_VISUALS
+local Phase = Protocol.Collapse
 
--- Every tween currently touching cc. Saturation gets tweened separately
--- from Contrast/TintColor during the telegraph build (see
--- handlers.telegraphStart) since TweenService only allows one easing
--- style per Create() call, and the two need different curves — so this
--- is a list, not a single tween, but the rule's the same as before:
--- every handler clears it before adding its own, so nothing is ever
--- left fighting over cc's properties.
+-- Reuse the map's own grading if it has one rather than fighting it
+-- with a second effect.
+local cc = Lighting:FindFirstChildOfClass("ColorCorrectionEffect")
+if not cc then
+	cc = Instance.new("ColorCorrectionEffect")
+	cc.Parent = Lighting
+end
+
+-- Every tween currently touching cc. Saturation is tweened separately
+-- from Contrast/TintColor during the build, because TweenService only
+-- allows one easing style per Create() and the two want different
+-- curves — so this is a list, but the rule is the same: every handler
+-- clears it before adding its own, so nothing is ever left fighting
+-- over cc's properties.
 local activeTweens = {}
 
 local function stopActiveTweens()
@@ -78,22 +69,30 @@ local function stopActiveTweens()
 	table.clear(activeTweens)
 end
 
--- ── FOV shift ────────────────────────────────────────────────────────
--- Driven through FOVController (see that module's own comment) rather
--- than tweening Camera.FieldOfView here directly — Sprint tweens the
--- same property for its own reasons, and this way the two run in
--- parallel instead of fighting over it or needing any handoff.
+-- The map's true values, captured the moment a telegraph starts and
+-- used by every handler after it, so nothing ever eases back to a
+-- hardcoded "normal".
+local base = nil
+
+local function captureBaseline()
+	if not base then
+		base = {
+			saturation = cc.Saturation,
+			contrast = cc.Contrast,
+			tint = cc.TintColor,
+		}
+	end
+	return base
+end
 
 -- ── camera shake ─────────────────────────────────────────────────────
--- Driven the same way as the color ramp: a NumberValue's .Value is
--- tweened from 0 up to whatever target intensity BallManager sends,
--- and a RenderStepped callback reads whatever that value currently is
--- each frame to size the jitter it applies. Bound at Camera priority +
--- 1 so it runs AFTER the game's own camera script has already set
--- camera.CFrame for the frame — it perturbs that fresh value rather
--- than fighting it, and since nothing is accumulated frame-to-frame,
--- stopping the binding snaps straight back to whatever the normal
--- camera script wants with no separate "reset" step needed.
+-- A NumberValue is tweened from 0 up to the target intensity, and a
+-- RenderStepped callback reads whatever it currently is each frame to
+-- size the jitter. Bound at Camera priority + 1 so it runs AFTER the
+-- camera script has set camera.CFrame for the frame — it perturbs that
+-- fresh value rather than fighting it, and since nothing accumulates
+-- frame to frame, unbinding snaps straight back to normal with no
+-- separate reset step.
 local SHAKE_BIND_NAME = "CollapseTelegraphShake"
 
 local rng = Random.new()
@@ -105,7 +104,9 @@ local shaking = false
 local function applyShakeThisFrame()
 	local camera = workspace.CurrentCamera
 	local intensity = shakeIntensity.Value
-	if not camera or intensity <= 0 then return end
+	if not camera or intensity <= 0 then
+		return
+	end
 	local posOffset = Vector3.new(rng:NextNumber(-1, 1), rng:NextNumber(-1, 1), rng:NextNumber(-1, 1)) * intensity
 	local rotOffset = CFrame.Angles(
 		math.rad(rng:NextNumber(-1, 1) * intensity * 4),
@@ -116,42 +117,49 @@ local function applyShakeThisFrame()
 end
 
 local function startShaking()
-	if shaking then return end
+	if shaking then
+		return
+	end
 	shaking = true
 	RunService:BindToRenderStep(SHAKE_BIND_NAME, Enum.RenderPriority.Camera.Value + 1, applyShakeThisFrame)
 end
 
 local function stopShaking()
-	if not shaking then return end
+	if not shaking then
+		return
+	end
 	shaking = false
 	RunService:UnbindFromRenderStep(SHAKE_BIND_NAME)
 end
 
--- Builds in intensity exponentially over the same `duration` as the
--- color ramp, matching its Contrast/Tint easing rather than the linear
--- Saturation — the shake is meant to escalate, not drain steadily.
+-- Builds exponentially over the same window as the colour ramp,
+-- matching the Contrast/Tint curve rather than the linear Saturation —
+-- the shake is meant to escalate, not drain steadily.
 local function startShake(duration, targetIntensity)
 	if shakeTween then
 		shakeTween:Cancel()
 	end
 	startShaking()
-	shakeTween = TweenService:Create(shakeIntensity, TweenInfo.new(duration, Enum.EasingStyle.Exponential, Enum.EasingDirection.In), {
-		Value = targetIntensity,
-	})
+	shakeTween = TweenService:Create(
+		shakeIntensity,
+		TweenInfo.new(duration, Enum.EasingStyle.Exponential, Enum.EasingDirection.In),
+		{ Value = targetIntensity }
+	)
 	shakeTween:Play()
 end
 
--- False alarm: eases back to still, same Exponential/Out as the color
--- cancel-fade above, then stops the render-step binding once it's
--- actually reached zero (rather than leaving a permanently-connected,
--- always-zero callback running every frame forever).
+-- False alarm: ease back to still, then stop the render-step binding
+-- once it's actually reached zero, rather than leaving a permanently
+-- connected always-zero callback running every frame forever.
 local function fadeOutShake(fadeTime)
 	if shakeTween then
 		shakeTween:Cancel()
 	end
-	shakeTween = TweenService:Create(shakeIntensity, TweenInfo.new(fadeTime, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
-		Value = 0,
-	})
+	shakeTween = TweenService:Create(
+		shakeIntensity,
+		TweenInfo.new(fadeTime, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out),
+		{ Value = 0 }
+	)
 	local thisTween = shakeTween
 	thisTween.Completed:Connect(function(playbackState)
 		if playbackState == Enum.PlaybackState.Completed and shakeTween == thisTween then
@@ -161,8 +169,8 @@ local function fadeOutShake(fadeTime)
 	shakeTween:Play()
 end
 
--- Genuine collapse: cut straight back to the default camera position
--- immediately, matching the instant grey cut rather than fading.
+-- Genuine collapse: cut straight back to the default camera position,
+-- matching the instant grey cut rather than fading.
 local function cutShake()
 	if shakeTween then
 		shakeTween:Cancel()
@@ -171,104 +179,127 @@ local function cutShake()
 	shakeIntensity.Value = 0
 	stopShaking()
 end
--- ─────────────────────────────────────────────────────────────────────
 
-local handlers = {}
+-- ── the four beats ───────────────────────────────────────────────────
 
-function handlers.telegraphStart(duration, targetSaturation, targetContrast, targetTintColor, targetShakeIntensity)
-	if not cc then return end
+local function telegraphStart()
+	local b = captureBaseline()
 	stopActiveTweens()
 
-	-- Saturation ramps linearly — a flat, steady drain rather than the
-	-- accelerating build Contrast/Tint get below.
+	local duration = Config.OVERFLOW_SUSTAIN
+
+	-- Saturation ramps linearly: a flat, steady drain rather than the
+	-- accelerating build Contrast and Tint get.
 	local satTween = TweenService:Create(cc, TweenInfo.new(duration, Enum.EasingStyle.Linear), {
-		Saturation = targetSaturation,
+		Saturation = b.saturation + V.telegraphSaturation,
 	})
 	satTween:Play()
 	table.insert(activeTweens, satTween)
 
-	-- Exponential/In so Contrast/Tint ease in gently at first and
-	-- accelerate toward their target — one continuous motion across the
-	-- whole countdown, landing at its peak exactly as it reaches 0.
-	local contrastTintTween = TweenService:Create(cc, TweenInfo.new(duration, Enum.EasingStyle.Exponential, Enum.EasingDirection.In), {
-		Contrast = targetContrast,
-		TintColor = targetTintColor,
-	})
+	-- Exponential/In so Contrast and Tint ease in gently and accelerate
+	-- toward their peak — one continuous motion across the countdown,
+	-- landing exactly as it reaches zero.
+	local contrastTintTween = TweenService:Create(
+		cc,
+		TweenInfo.new(duration, Enum.EasingStyle.Exponential, Enum.EasingDirection.In),
+		{
+			Contrast = b.contrast + V.telegraphContrast,
+			TintColor = b.tint:Lerp(V.telegraphTint, V.telegraphTintIntensity),
+		}
+	)
 	contrastTintTween:Play()
 	table.insert(activeTweens, contrastTintTween)
 
-	startShake(duration, targetShakeIntensity)
+	startShake(duration, V.telegraphShake)
 
-	-- Zoom in over the same build as Contrast/Tint (Exponential/In), so
-	-- it lands at its peak — base FOV / 1.5 — exactly as the countdown
-	-- hits 0. This is a divisor tweened through FOVController, running
-	-- in parallel with whatever Sprint is doing to the base FOV, not a
-	-- value captured once off the camera.
+	-- Zoom in over the same build, through FOVController rather than
+	-- touching Camera.FieldOfView directly — Sprint drives the same
+	-- property for its own reasons, and layering means the two run in
+	-- parallel instead of fighting.
 	FOVController.SetScale(1.3, TweenInfo.new(duration, Enum.EasingStyle.Exponential, Enum.EasingDirection.In))
 end
 
-function handlers.telegraphCancel(fadeTime, baseSaturation, baseContrast, baseTint)
-	if not cc then return end
+local function telegraphCancel()
+	if not base then
+		return
+	end
 	stopActiveTweens()
-	-- Exponential/Out mirrors the Exponential/In build above — fast at
-	-- first, then eases out gently as it settles back at baseline,
-	-- rather than the flat default easing.
-	local cancelTween = TweenService:Create(cc, TweenInfo.new(fadeTime, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
-		Saturation = baseSaturation,
-		Contrast = baseContrast,
-		TintColor = baseTint,
-	})
+
+	local fadeTime = V.telegraphCancelFade
+	-- Exponential/Out mirrors the build: quick at first, easing out as
+	-- it settles back. Deliberately faster than a real collapse's own
+	-- fade — standing down should read as a false alarm, not a
+	-- leisurely recovery.
+	local cancelTween = TweenService:Create(
+		cc,
+		TweenInfo.new(fadeTime, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out),
+		{
+			Saturation = base.saturation,
+			Contrast = base.contrast,
+			TintColor = base.tint,
+		}
+	)
 	cancelTween:Play()
 	table.insert(activeTweens, cancelTween)
 
 	fadeOutShake(fadeTime)
-
-	-- False alarm: mirrors the Exponential/Out un-build above, easing
-	-- the zoom divisor back to 1.
 	FOVController.SetScale(1, TweenInfo.new(fadeTime, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out))
+
+	base = nil
 end
 
-function handlers.collapseCut(targetContrast, targetTintColor)
-	if not cc then return end
+local function collapseCut()
+	local b = captureBaseline()
 	stopActiveTweens()
-	-- Instant, no tween — the collapse itself cutting to grey should
-	-- read as a hard cut, not a fade.
+
+	-- Instant, no tween: the collapse firing should read as a hard cut.
+	-- TintColor goes back to the map's own, so this lands as genuinely
+	-- grey rather than grey tinted magenta by the build-up.
 	cc.Saturation = -1
-	cc.Contrast = targetContrast
-	cc.TintColor = targetTintColor
+	cc.Contrast = b.contrast + V.contrastBoost
+	cc.TintColor = b.tint
 
 	cutShake()
 
-	-- Zoom snaps off right here, the instant the collapse actually
-	-- fires, rather than staying zoomed through the whole sell-off/
-	-- penalty sequence until collapseResolve — which can run several
-	-- seconds later and would otherwise leave the camera zoomed in (and
-	-- Sprint's own FOV changes reading as oddly muted) the entire time.
-	-- No tweenInfo = instant, matching the hard cut everything else
-	-- here takes.
+	-- The zoom snaps off here rather than at the end of the whole
+	-- sell-off and penalty sequence, which can run several seconds
+	-- later and would otherwise leave the camera zoomed the whole time.
 	FOVController.SetScale(1)
 end
 
-function handlers.collapseResolve(fadeTime, targetSaturation, targetContrast)
-	if not cc then return end
+local function collapseResolve()
+	if not base then
+		return
+	end
 	stopActiveTweens()
-	local resolveTween = TweenService:Create(cc, TweenInfo.new(fadeTime), {
-		Saturation = targetSaturation,
-		Contrast = targetContrast,
+
+	local resolveTween = TweenService:Create(cc, TweenInfo.new(Config.COLLAPSE_FADE_TIME), {
+		Saturation = base.saturation,
+		Contrast = base.contrast,
 	})
 	resolveTween:Play()
 	table.insert(activeTweens, resolveTween)
+
+	base = nil
 end
 
-vfx.OnClientEvent:Connect(function(kind, ...)
-	local handler = handlers[kind]
-	if handler then
-		handler(...)
+-- The telegraph fires once a second while the queue is over the line;
+-- the ramp only starts on the first one.
+local telegraphing = false
+
+ClientBoard.collapse.Event:Connect(function(phase)
+	if phase == Phase.TELEGRAPH then
+		if not telegraphing then
+			telegraphing = true
+			telegraphStart()
+		end
+	elseif phase == Phase.CANCEL then
+		telegraphing = false
+		telegraphCancel()
+	elseif phase == Phase.CUT then
+		telegraphing = false
+		collapseCut()
+	elseif phase == Phase.RESOLVE then
+		collapseResolve()
 	end
 end)
-
---[[
-	FOV shift is implemented via FOVController (see its own comment) —
-	the SetScale calls in telegraphStart/telegraphCancel/collapseCut
-	above.
-]]

@@ -3,9 +3,9 @@
     Path: ServerScriptService
     Parent: ServerScriptService
     Properties:
-        Disabled: false
+        Disabled: true
         RunContext: Enum.RunContext.Legacy
-    Exported: 2026-09-20 20:00:08
+    Exported: 2026-09-20 22:14:28
 ]]
 --[[
 	GrabHandler (Script) — ServerScriptService, sibling of ShopHandler,

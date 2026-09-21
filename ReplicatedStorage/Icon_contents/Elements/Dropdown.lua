@@ -3,7 +3,7 @@
     Path: ReplicatedStorage → Icon → Elements
     Parent: Elements
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-20 20:00:08
+    Exported: 2026-09-20 22:14:29
 ]]
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")

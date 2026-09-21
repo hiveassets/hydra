@@ -4,7 +4,7 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
-    Exported: 2026-09-20 20:00:10
+    Exported: 2026-09-20 22:14:30
 ]]
 --[[
 	SellClient (LocalScript) — StarterPlayerScripts
@@ -131,10 +131,16 @@ end
 -- when sell mode turns on, so only one of the three is ever active
 local ToolbarPanels = require(Rep:WaitForChild("ToolbarPanels"))
 
-local sellRequest = Rep:WaitForChild("SellRequest")
 local sellBroadcast = Rep:WaitForChild("SellBroadcast")
-local sellBoxRequest = Rep:WaitForChild("SellBoxRequest") -- bulk-sell counterpart — see the box-select block further down
-local se = Rep:WaitForChild("SoundEvents") -- also carries the "sellFlash"/"attachedFlash" kinds SellService dispatches for other players' sells
+
+-- Selling goes through the board now rather than its own remote: the
+-- ball is a part on this machine, so "sell" means remove it here and
+-- tell the server which id went. SellRequest, SellBoxRequest and the
+-- sellFlash/attachedFlash relay through SoundEvents are all gone with
+-- it — none of them had anything left to carry.
+local ClientBoard = require(script.Parent:WaitForChild("ClientBoard"))
+local BoardEffects = require(script.Parent:WaitForChild("BoardEffects"))
+local BoardConfig = require(Rep:WaitForChild("BoardConfig"))
 
 -- "Logs" tab: where the routine sell-log lines (see LOG_CHANNEL in
 -- SellService) land instead of the main channel. SellHandler is what
@@ -959,29 +965,13 @@ local function finalizeBoxSelect()
 		sumPos += pos
 
 		sellFlash(pos, ball:GetAttribute("TargetSize") or ball.Size.X, HIGHLIGHT_COLOR)
-		ball.LocalTransparencyModifier = 1
-		ball.Anchored = true
-		ball.CanCollide = false
-		ball.CanQuery = false
-		local display = ball:FindFirstChild("display")
-		if display then
-			display.Enabled = false
-		end
-
-		-- same reasoning as the single-sell handler further down: our
-		-- own flash/hide already played, so SellService's own pre-sell
-		-- Highlight (which replicates to us too) would just show up
-		-- floating on top of an otherwise-invisible ball — destroy it
-		-- locally the instant it shows up
-		ball.ChildAdded:Connect(function(child)
-			if child:IsA("Highlight") then
-				child:Destroy()
-			end
-		end)
 	end
 
 	localSellSound(sumPos / #targets)
-	sellBoxRequest:FireServer(targets)
+
+	-- One message for the whole selection, and the balls themselves go
+	-- immediately — same reasoning as the single sell above.
+	ClientBoard.sellBox(targets)
 end
 
 RS.RenderStepped:Connect(updateBoxSelect)
@@ -1086,52 +1076,21 @@ UIS.InputBegan:Connect(function(input, processed)
 			-- matching fireExceptSeller call for everyone else
 			localSellSound(pos, DEFUSE_SND_ID, DEFUSE_VOL, DEFUSE_PITCH)
 		end
-		sellRequest:FireServer(ball)
-
-		-- predicted instantly, right here, rather than waiting on the
-		-- server: the flash plays now instead of on Destroying, and
-		-- LocalTransparencyModifier hides the ball for just this client
-		-- without touching the shared instance — the real ball sticks
-		-- around a beat longer server-side so everyone else still gets
-		-- the same fade-in warning an auto-sell gives (see SellService),
-		-- but none of that should be visible (or solid) to whoever
-		-- actually clicked.
-		--
-		-- CanCollide/CanQuery aren't network-owned like a character's
-		-- physics is — setting them here only changes this client's own
-		-- copy for its own collision/raycast checks, the same
-		-- local-only, never-replicated-back deal LocalTransparencyModifier
-		-- gets, so the ball stays fully solid and clickable for the
-		-- server and every other client until it's actually destroyed.
-		--
-		-- LocalTransparencyModifier/CanCollide/CanQuery only cover the
-		-- part itself though — the "display" BillboardGui (numDisplay) is
-		-- a separate instance that ignores all three, so it's disabled
-		-- here too, the same FindFirstChild-guarded way setDisplayText
-		-- looks it up.
+		-- Nothing to predict any more: the ball is a part on this
+		-- machine, so the flash plays and then it's simply gone. All the
+		-- hiding that used to live here — LocalTransparencyModifier,
+		-- Anchored, CanCollide, CanQuery, disabling the display,
+		-- destroying the Highlight the server was about to replicate in
+		-- — existed because the real ball had to stick around another
+		-- 0.3s for everyone else's benefit. There is no everyone else on
+		-- this board.
 		clearHighlight()
 		removeSellableHighlight(ball)
 		sellFlash(pos, size, colorFor(ball))
-		ball.LocalTransparencyModifier = 1
-		ball.Anchored = true
-		ball.CanCollide = false
-		ball.CanQuery = false
-		local display = ball:FindFirstChild("display")
-		if display then
-			display.Enabled = false
-		end
 
-		-- SellService's own pre-sell Highlight (see its header) replicates
-		-- to every client, including us — but we've already shown our own
-		-- flash and hidden the ball, so that fade-in would just show up
-		-- floating on top of an otherwise-invisible ball. Destroying it
-		-- locally only removes it from this client's view, not the
-		-- server's copy or anyone else's.
-		ball.ChildAdded:Connect(function(child)
-			if child:IsA("Highlight") then
-				child:Destroy()
-			end
-		end)
+		-- Last, so the colour and size above are read off a ball that
+		-- still exists.
+		ClientBoard.sell(ball)
 
 	elseif input.UserInputType == Enum.UserInputType.MouseButton1 and sellMode and not player:GetAttribute("AFK") then
 		-- fell through the single-sell branch above — not currently
@@ -1141,22 +1100,6 @@ UIS.InputBegan:Connect(function(input, processed)
 		-- already mid-sell, all of it, same as the comment on
 		-- beginBoxSelect's own block describes.
 		beginBoxSelect()
-	end
-end)
-
--- other players' sells: SellService fires this (skipping us — we already
--- built ours above). `color` is SellService's yellow/cyan/red choice for
--- this sell — see its header. "attachedFlash" is collapseSell's
--- client-resolved-position variant, used only for the overflow-collapse
--- flash (see attachedFlash's own comment above). "flatPitched"
--- (BallManager's overflow-collapse alarm and SellService's
--- collapse-penalty sell cue) is handled by SoundClient instead,
--- alongside every other SoundEvents kind.
-se.OnClientEvent:Connect(function(kind, ...)
-	if kind == "sellFlash" then
-		sellFlash(...)
-	elseif kind == "attachedFlash" then
-		attachedFlash(...)
 	end
 end)
 
@@ -1175,9 +1118,17 @@ if ok then
 	broadcastChannels.RBXGeneral = general
 end
 
-sellBroadcast.OnClientEvent:Connect(function(message, channelName)
+-- `ping` is true for the automated system's own lines (the collapse
+-- alert, the fine, the quip, a bribe's reaction). Those used to play
+-- their cue through a separate SoundEvents fire to everyone; now the
+-- line and its sound arrive together, and only for the player the line
+-- is about.
+sellBroadcast.OnClientEvent:Connect(function(message, channelName, ping)
 	local channel = (channelName and broadcastChannels[channelName]) or broadcastChannels.RBXGeneral
 	if channel then
 		channel:DisplaySystemMessage(message)
+	end
+	if ping then
+		BoardEffects.flatSound(BoardConfig.SOUNDS.collapseMessage)
 	end
 end)

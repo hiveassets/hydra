@@ -3,7 +3,7 @@
     Path: ReplicatedStorage → Icon → Features
     Parent: Features
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-20 20:00:09
+    Exported: 2026-09-20 22:14:29
 ]]
 -- The functions here are dedicated solely to managing theme state
 -- and updating the appearance of instances to match that state.

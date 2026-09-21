@@ -5,7 +5,7 @@
     Properties:
         Disabled: false
         RunContext: Enum.RunContext.Legacy
-    Exported: 2026-09-20 20:00:08
+    Exported: 2026-09-20 22:14:28
 ]]
 --[[
 	AdminCommands (Script) — ServerScriptService
@@ -82,6 +82,12 @@
 ]]
 
 local Players = game:GetService("Players")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+-- Replaces the old _G.BallManagerSummon / _G.BallManagerClear hooks.
+-- A require yields until the module is ready instead of handing back a
+-- nil to check for, so the "hasn't loaded yet" branches below are gone.
+local BoardService = require(ServerScriptService:WaitForChild("BoardService"))
 
 -- add every admin's UserId here (not username — names can change,
 -- ids don't)
@@ -144,12 +150,15 @@ local function handleSummon(player, args)
 		end
 	end
 
-	if not _G.BallManagerSummon then
-		reply(player, "Summon isn't available right now (BallManager hasn't loaded).")
+	-- Summons land on the admin's OWN board now. Targeting someone
+	-- else's is a phase 2 addition (!summon @name bomb).
+	local board = BoardService.get(player)
+	if not board then
+		reply(player, "You don't have a board right now.")
 		return
 	end
 
-	local ok, err = _G.BallManagerSummon(kind, size, count, radiant)
+	local ok, err = board:summon(kind, size, count, radiant)
 	local label = radiant and ("radiant " .. kind) or kind
 	if ok then
 		if count == 1 then
@@ -259,12 +268,13 @@ end
 
 -- !clear
 local function handleClear(player, args)
-	if not _G.BallManagerClear then
-		reply(player, "Clear isn't available right now (BallManager hasn't loaded).")
+	local board = BoardService.get(player)
+	if not board then
+		reply(player, "You don't have a board right now.")
 		return
 	end
 
-	local ok, err = _G.BallManagerClear()
+	local ok, err = board:clear()
 	if ok then
 		reply(player, "Cleared the board.")
 	else

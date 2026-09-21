@@ -5,7 +5,7 @@
     Properties:
         Disabled: false
         RunContext: Enum.RunContext.Legacy
-    Exported: 2026-09-20 20:00:08
+    Exported: 2026-09-20 22:14:29
 ]]
 --[[
 	AFKHandler (Script) — ServerScriptService, sibling of SellHandler
@@ -81,21 +81,11 @@ local HIGHLIGHT_NAME = "AFKHighlight"
 local HIGHLIGHT_COLOR = Color3.new(0, 0, 0)
 local HIGHLIGHT_TRANSPARENCY = 0.3
 
-local bf = WS:WaitForChild("Balls")
-
--- BallManager owns the Balls collision group for everything it spawns, and
--- tags each template before cloning. Keep this folder sweep as a defensive
--- backstop for any future script that inserts a BasePart here directly.
-local function tagBall(obj)
-	-- CG.assign warns and carries on rather than erroring, same as the
-	-- pcall+warn this used to do by hand
-	CG.assign(obj, CG.Balls)
-end
-
-for _, obj in ipairs(bf:GetChildren()) do
-	tagBall(obj)
-end
-bf.ChildAdded:Connect(tagBall)
+-- No folder sweep any more: every ball is created by the client that
+-- owns it (see ClientBoard), which tags its own collision group as it
+-- goes. AFK still works exactly as before, because the AFKPlayers group
+-- and its rules are registered on the server and replicate down, so an
+-- AFK player passes through the balls on their own board.
 
 -- same create-if-missing pattern SellHandler/BallManager use for their
 -- own remotes

@@ -3,7 +3,7 @@
     Path: ReplicatedStorage → Icon
     Parent: Icon
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-20 20:00:08
+    Exported: 2026-09-20 22:14:29
 ]]
 -- This module enables you to place Icon wherever you like within the data model while
 -- still enabling third-party applications (such as HDAdmin/Nanoblox) to locate it

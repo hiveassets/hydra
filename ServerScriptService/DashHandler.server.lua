@@ -5,83 +5,57 @@
     Properties:
         Disabled: false
         RunContext: Enum.RunContext.Legacy
-    Exported: 2026-09-20 20:00:08
+    Exported: 2026-09-20 22:14:28
 ]]
 --[[
 	DashHandler (Script) — ServerScriptService
 
-	Server side of the dash sound. Dash itself stays purely client-side
-	(see DashClient's header) — this only exists to relay the dash
-	sound to everyone else, the same instant-local / server-relay split
-	SellClient/SellService use for the sell sound. DashClient plays it
-	locally the instant a dash fires and pings this with DashRequest so
-	everyone else hears it too.
+	All that's left of this is the sound. Dashing itself was always
+	client-side (see DashClient), and now the balls it shoves are too, so
+	there's nothing for the server to arrange.
 
-	Validation here is limited to what's needed to keep DashRequest
-	from being spammed/spoofed into free sound spam: the player has to
-	actually own Dash and be off cooldown server-side too — mirrors
-	DashClient's own gating so a modified client can't just fire this
-	on every frame.
+	WHAT WAS HERE BEFORE, AND WHY IT'S GONE
 
-	DashRequest also does one more thing beyond the sound relay: it
-	temporarily hands the dashing player explicit network ownership of
-	every ball near them (see claimNearbyBalls). Dash pushes balls
-	purely through local physics on the dasher's own client (see
-	DashClient's header — dash movement is deliberately unvalidated,
-	same as everywhere else here that's client-only), but that client
-	usually isn't the ball's actual network owner: Roblox only
-	reassigns ownership on its own periodic proximity pass, which can't
-	keep up with a dash that's over in DASH_TIME seconds — especially
-	once the field is busy with balls constantly colliding into each
-	other and churning ownership around on their own. Without this, the
-	push looks right on the dasher's own screen and then gets
-	overwritten once the ball's actual (stale, un-pushed) owner's state
-	replicates in, which is what reads as the dash "struggling" to move
-	balls under load. Explicitly claiming ownership up front — and
-	holding it briefly past the dash itself, so the ball's post-impact
-	roll has time to settle before ownership moves on — fixes the
-	common case. It can't fully cover every case: on a high enough ping
-	the claim itself can still arrive after the dash has already
-	finished playing out locally, in which case that particular
-	impact's initial contact frame is still a best-effort thing, same
-	as any physics networking under real latency.
+	claimNearbyBalls handed the dashing player explicit network ownership
+	of every ball within 20 studs, then handed each one back a quarter of
+	a second later. That existed because a dash pushes balls through the
+	dasher's own local physics, but the dasher usually wasn't the ball's
+	network owner — Roblox reassigns ownership on its own slow proximity
+	pass, which can't keep up with something that's over in a tenth of a
+	second. Without the claim, the push looked right on the dasher's
+	screen and then got overwritten when the real owner's (stale,
+	un-pushed) state replicated in. That's what "the dash struggles to
+	move balls under load" actually was.
 
-	DashHandler owns creating DashRequest, same create-if-missing
-	pattern SellHandler uses for SellRequest/SellBroadcast.
+	Every ball on your board is now simulated by your own machine, so the
+	dash and the balls it hits are the same physics step. There is no
+	owner to claim, no handoff to lose, and no window where it can go
+	wrong.
+
+	The sound stays, because other players can see you dash: DashClient
+	plays it locally the instant the dash fires, and this relays the same
+	cue to everyone else. Same instant-local / server-relay split as
+	before, just with nothing else attached to it.
+
+	This script also owns creating SoundEvents now. BallManager used to,
+	and BallManager is gone.
 ]]
 
 local Players = game:GetService("Players")
-local WS = game:GetService("Workspace")
 local Rep = game:GetService("ReplicatedStorage")
+
+-- SoundClient waits on this by name; create-if-missing, same pattern the
+-- other remotes in this game use.
+local se = Rep:FindFirstChild("SoundEvents") or Instance.new("RemoteEvent")
+se.Name, se.Parent = "SoundEvents", Rep
 
 local dashRequest = Rep:FindFirstChild("DashRequest") or Instance.new("RemoteEvent")
 dashRequest.Name, dashRequest.Parent = "DashRequest", Rep
 
-local se = Rep:WaitForChild("SoundEvents") -- created by BallManager
-
-local ballT = Rep:WaitForChild("Ball")
-local bf = WS:WaitForChild("Balls") -- created by BallManager
-
 local DASH_SND_ID, DASH_VOL, DASH_PITCH = "rbxassetid://12222208", 0.25, 1.3
-local DASH_COOLDOWN = 1 -- keep in sync with DashClient's DASH_COOLDOWN
-local DASH_SPEED, DASH_TIME = 100, 0.1 -- keep in sync with DashClient's own — used only to size DASH_PUSH_RADIUS below
+local DASH_COOLDOWN = 1 -- keep in step with DashClient's own
 
--- generous radius around the player to claim ball ownership in: covers
--- how far a full dash can travel, plus slack for the fact that by the
--- time this fires the server's own view of the player's position may
--- already be mid-dash (or a little behind it) depending on latency —
--- better to over-claim a few extra idle balls than under-claim the one
--- that actually gets hit
-local DASH_PUSH_RADIUS = DASH_SPEED * DASH_TIME + 10
-
--- how long the dasher keeps explicit ownership of a claimed ball after
--- the dash itself ends, so its post-impact roll gets to settle under
--- the dasher's own (already-in-sync) simulation instead of getting
--- reassigned mid-roll — same reasoning and shape as GrabHandler's
--- OWNERSHIP_RELEASE_DELAY for a thrown ball
-local DASH_OWNERSHIP_DELAY = 0.25
-
--- weak-keyed so a player leaving doesn't leak an entry forever
+-- weak-keyed so a player leaving doesn't leave an entry behind
 local lastDash = setmetatable({}, { __mode = "k" })
 
 local function ownsDash(player)
@@ -89,53 +63,37 @@ local function ownsDash(player)
 	return upgrades and upgrades:FindFirstChild("dash") ~= nil
 end
 
--- same "everyone but the player who already heard it locally" shape as
--- SellService's fireExceptSeller
+-- everyone except the player who already heard it locally
 local function fireExceptDasher(player, ...)
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p ~= player then
-			se:FireClient(p, ...)
+	for _, other in ipairs(Players:GetPlayers()) do
+		if other ~= player then
+			se:FireClient(other, ...)
 		end
 	end
 end
 
--- hands `player` explicit network ownership of every regular ball
--- within DASH_PUSH_RADIUS of `hrp`, then hands each one back to
--- automatic assignment after DASH_OWNERSHIP_DELAY — unless it's been
--- grabbed in the meantime, in which case GrabHandler already owns that
--- ball's ownership lifecycle and this backs off. "Held" is the same
--- attribute GrabHandler already sets/clears on grab/release, reused
--- here as a cheap cross-system signal rather than reaching into its
--- private heldBy table.
-local function claimNearbyBalls(player, hrp)
-	for _, ball in ipairs(bf:GetChildren()) do
-		if ball.Name == ballT.Name and not ball:GetAttribute("Held") then
-			if (ball.Position - hrp.Position).Magnitude <= DASH_PUSH_RADIUS then
-				ball:SetNetworkOwner(player)
-				task.delay(DASH_OWNERSHIP_DELAY, function()
-					if ball.Parent and not ball:GetAttribute("Held") then
-						ball:SetNetworkOwnershipAuto()
-					end
-				end)
-			end
-		end
-	end
-end
-
+-- The checks below aren't protecting anything valuable — a dash can't
+-- earn money and can't touch anyone else's board. They're here so a
+-- modified client can't fire this every frame and turn the dash cue
+-- into server-wide noise.
 dashRequest.OnServerEvent:Connect(function(player)
-	if not ownsDash(player) then return end
+	if not ownsDash(player) then
+		return
+	end
 
-	local now = os.clock()
-	if lastDash[player] and now - lastDash[player] < DASH_COOLDOWN then return end
-	lastDash[player] = now
+	local t = os.clock()
+	if lastDash[player] and t - lastDash[player] < DASH_COOLDOWN then
+		return
+	end
+	lastDash[player] = t
 
 	local character = player.Character
 	local hrp = character and character:FindFirstChild("HumanoidRootPart")
-	if not hrp then return end
+	if not hrp then
+		return
+	end
 
-	claimNearbyBalls(player, hrp)
-
-	-- "attached" (not "positional") since the character keeps moving
-	-- for the dash's duration — the sound should move with them
+	-- "attached" rather than "positional": the character keeps moving
+	-- for the length of the dash, so the sound should move with them.
 	fireExceptDasher(player, "attached", hrp, DASH_SND_ID, DASH_VOL, DASH_PITCH)
 end)

@@ -3,8 +3,8 @@
     Path: StarterPlayer → StarterPlayerScripts
     Parent: StarterPlayerScripts
     Properties:
-        Disabled: false
-    Exported: 2026-09-20 20:00:09
+        Disabled: true
+    Exported: 2026-09-20 22:14:29
 ]]
 --[[
 	GrabClient (LocalScript) — StarterPlayerScripts
