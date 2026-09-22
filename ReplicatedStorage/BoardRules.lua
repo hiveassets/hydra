@@ -2,7 +2,7 @@
     BoardRules (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
-    Exported: 2026-09-22 13:33:38
+    Exported: 2026-09-22 14:24:27
 ]]
 --[[
 	BoardRules (ModuleScript) — place directly in ReplicatedStorage
@@ -221,6 +221,20 @@ end
 
 function BoardRules.rollRadiant(rand)
 	return rand() < Config.RADIANT_CHANCE
+end
+
+-- Whether a kind can exist in its radiant form. A plain orb always can;
+-- the specials each need their own radiant behaviour, and until phase 3
+-- puts those back none of them are on the board at all.
+--
+-- The stash asks this BEFORE taking something, rather than discovering
+-- it at deploy time: an orb that can't be handed back the way it went in
+-- is worse than one that was never taken.
+function BoardRules.radiantSupported(kind)
+	if kind == "ball" then
+		return true
+	end
+	return false
 end
 
 -- Balls are coloured at spawn by the server rather than the client, for

@@ -3,8 +3,8 @@
     Path: StarterPlayer → StarterPlayerScripts
     Parent: StarterPlayerScripts
     Properties:
-        Disabled: true
-    Exported: 2026-09-22 13:33:39
+        Disabled: false
+    Exported: 2026-09-22 14:24:28
 ]]
 --[[
 	StashClient (LocalScript) — StarterPlayerScripts
@@ -108,6 +108,11 @@ local RS = game:GetService("RunService")
 local player = Players.LocalPlayer
 
 local StashData = require(Rep:WaitForChild("StashData"))
+
+-- The absorb animation lives on the board now. The orb is a part on
+-- this machine, so pulling it in is local and instant rather than a
+-- CFrame write per frame arriving from the server.
+local ClientBoard = require(script.Parent:WaitForChild("ClientBoard"))
 
 local stashRequest = Rep:WaitForChild("StashRequest")
 local stashDeploy = Rep:WaitForChild("StashDeploy")
@@ -613,14 +618,33 @@ local function raycastStashTarget()
 	return result and result.Instance or nil
 end
 
-local function hasFreeSlot(tier)
+-- Slots spoken for by a request that's already on its way to the
+-- server. The absorb plays immediately, but a slot's own values only
+-- appear once the server has written them and replication has carried
+-- them back — and two R presses inside that window would both pick the
+-- same empty slot, with the second orb quietly overwriting the first.
+-- A reservation closes that gap, and lapses on its own if the answer
+-- never arrives.
+local RESERVATION_TIME = 2
+
+local reservedUntil = {} -- [index] = os.clock() it stops counting as taken
+
+local function slotIsFree(index)
+	local slot = stash:FindFirstChild(tostring(index))
+	if not slot or slot.Kind.Value ~= "" then
+		return false
+	end
+	local until_ = reservedUntil[index]
+	return not (until_ and os.clock() < until_)
+end
+
+local function firstFreeSlot(tier)
 	for index = 1, tier do
-		local slot = stash:FindFirstChild(tostring(index))
-		if slot and slot.Kind.Value == "" then
-			return true
+		if slotIsFree(index) then
+			return index
 		end
 	end
-	return false
+	return nil
 end
 
 -- Every check here mirrors one StashHandler makes server-side — none of
@@ -638,7 +662,8 @@ local function tryStash(target)
 
 	local tier = currentTier()
 	if tier == 0 then return end -- upgrade not owned at all
-	if not hasFreeSlot(tier) then return end -- full; silently rejected, same as server-side
+	local freeSlot = firstFreeSlot(tier)
+	if not freeSlot then return end -- full; silently rejected, same as server-side
 
 	local kind = StashData.kindFromInstance(target)
 	if not kind then return end -- mimics land here, by virtue of not being in StashData.KINDS at all
@@ -679,7 +704,15 @@ local function tryStash(target)
 	local size = StashData.captureSize(target)
 	if (target.Position - hrp.Position).Magnitude - size / 2 > STASH_RANGE then return end
 
-	stashRequest:FireServer(target)
+	-- The pull plays here and now, and the orb leaves the board the
+	-- moment it arrives. The server is told which id went and fills the
+	-- slot from its own ledger, so the size in the toolbar is the one
+	-- the board already had — never a number this client sent.
+	local id = ClientBoard.stashAbsorb(target)
+	if not id then return end
+
+	reservedUntil[freeSlot] = os.clock() + RESERVATION_TIME
+	stashRequest:FireServer(id)
 end
 
 -- ── deploying ───────────────────────────────────────────────────────

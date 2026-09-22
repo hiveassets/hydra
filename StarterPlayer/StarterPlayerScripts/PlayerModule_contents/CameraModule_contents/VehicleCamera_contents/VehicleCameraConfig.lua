@@ -3,7 +3,7 @@
     Path: StarterPlayer → StarterPlayerScripts → PlayerModule → CameraModule → VehicleCamera
     Parent: VehicleCamera
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-22 13:33:38
+    Exported: 2026-09-22 14:24:27
 ]]
 local VEHICLE_CAMERA_CONFIG = {
 	-- (hz) Camera response stiffness along the pitch axis

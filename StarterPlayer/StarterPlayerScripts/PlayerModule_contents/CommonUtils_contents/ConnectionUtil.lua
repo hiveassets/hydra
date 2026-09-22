@@ -3,7 +3,7 @@
     Path: StarterPlayer → StarterPlayerScripts → PlayerModule → CommonUtils
     Parent: CommonUtils
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-22 13:33:38
+    Exported: 2026-09-22 14:24:27
 ]]
 --!strict
 -- Utility module for handling RBXScriptSignals/Connections

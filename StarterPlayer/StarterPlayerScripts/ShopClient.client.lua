@@ -4,7 +4,7 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
-    Exported: 2026-09-22 13:33:39
+    Exported: 2026-09-22 14:24:28
 ]]
 --[[
 	ShopClient (LocalScript) — StarterPlayerScripts
@@ -520,13 +520,13 @@ local function buildShop()
 			entry.priceColor = upgrade.priceColor
 			entry.unavailableText = "(on cooldown ...)"
 
-			-- cooldown is tracked authoritatively by ShopHandler; this
-			-- attribute on ReplicatedStorage is just its replicated
-			-- mirror (see ShopHandler's header) — a Unix timestamp of
-			-- when bribe becomes buyable again, or 0 while it isn't on
-			-- cooldown at all
+			-- The cooldown is per player now rather than server-wide —
+			-- one person buying a bribe has nothing to do with anyone
+			-- else's board. ShopHandler tracks it authoritatively and
+			-- mirrors it onto this attribute on the PLAYER purely for
+			-- this check; it never reads it back.
 			local function onCooldown()
-				local cooldownUntil = Rep:GetAttribute("BribeCooldownUntil")
+				local cooldownUntil = player:GetAttribute("BribeCooldownUntil")
 				return cooldownUntil and cooldownUntil > os.time()
 			end
 
@@ -537,7 +537,7 @@ local function buildShop()
 			-- branch's getPrice above.
 			entry.getPrice = function()
 				if onCooldown() then return nil end
-				return upgrade.dynamicPrice()
+				return upgrade.dynamicPrice(player)
 			end
 
 			-- never marked owned — repeatable is the whole point, so

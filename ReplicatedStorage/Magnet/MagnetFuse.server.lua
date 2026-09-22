@@ -5,7 +5,7 @@
     Properties:
         Disabled: false
         RunContext: Enum.RunContext.Legacy
-    Exported: 2026-09-22 13:33:37
+    Exported: 2026-09-22 14:24:26
 ]]
 --[[
 	MagnetFuse (Script) — lives as a child of ReplicatedStorage.Magnet, so

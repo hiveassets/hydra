@@ -2,7 +2,7 @@
     Board (ModuleScript)
     Path: ServerScriptService
     Parent: ServerScriptService
-    Exported: 2026-09-22 13:33:36
+    Exported: 2026-09-22 14:24:25
 ]]
 --[[
 	Board (ModuleScript) — place in ServerScriptService
@@ -153,13 +153,43 @@ function Board:entry(id)
 	return self.balls[id]
 end
 
--- A ball is only "live" once its launch stamp has passed and it has had
--- LAUNCH_TO_LIVE to actually rise onto the platform. Anything the
--- client claims about a ball before that is refused.
+-- TWO DIFFERENT QUESTIONS, AND THEY USED TO BE ONE
+--
+-- `isLive` is the strict one: the launch stamp has passed AND the ball
+-- has had LAUNCH_TO_LIVE on top of that to actually rise onto the
+-- platform. That grace period is an anti-duplication guard and belongs
+-- to FALLS specifically, because a fall is one of the few events that
+-- creates value — it turns one ball into two. A client claiming a ball
+-- fell before it could plausibly have got anywhere is claiming money,
+-- so it's refused.
+--
+-- `isOnBoard` is the loose one: the stamp has passed, full stop. A ball
+-- that is visibly on screen, even mid-rise, is something the player can
+-- legitimately click.
+--
+-- Selling, box-selling and stashing all used the strict one, and that
+-- was a bug. None of them create value: the price and the stashed size
+-- both come out of this ledger, so selling a ball 0.2s into its rise
+-- pays exactly what selling it a second later would. All the grace
+-- period did there was refuse a click the player had every right to
+-- make — and because the client hides a sold ball the instant it's
+-- clicked, a refusal left the ball gone on screen but still sitting in
+-- this table, where ensureBall counted it as a ball the board already
+-- had. Sell fast enough and the board would empty out and stay empty.
+--
+-- It also doesn't wait on _pruneQueue's next tick to see the state flip
+-- to "live": it reads the clock directly, so there's no extra 100ms
+-- window where the answer depends on when a timer last ran.
 function Board:isLive(entry)
 	return entry ~= nil
 		and entry.state == "live"
 		and now() >= entry.launchAt + Config.LAUNCH_TO_LIVE
+end
+
+function Board:isOnBoard(entry)
+	return entry ~= nil
+		and entry.state ~= "gone"
+		and now() >= entry.launchAt
 end
 
 -- Balls actually ON the board — not counting anything still waiting in
@@ -249,8 +279,19 @@ function Board:queueSpawn(size, opts, batch)
 		end
 	end
 
-	local launchAt = math.max(t, self.lastLaunchAt + Config.GAP)
-	self.lastLaunchAt = launchAt
+	-- `immediate` jumps the queue instead of taking the next stamp after
+	-- it. Only a stash deploy uses it, and it matters: a deploy is an
+	-- explicit request for an orb you already own, so waiting out forty
+	-- organic spawns to get it back would make the stash feel broken.
+	-- It deliberately doesn't touch lastLaunchAt either, so it slots in
+	-- alongside the queue rather than pushing everything else back.
+	local launchAt
+	if opts.immediate then
+		launchAt = t
+	else
+		launchAt = math.max(t, self.lastLaunchAt + Config.GAP)
+		self.lastLaunchAt = launchAt
+	end
 
 	local entry = {
 		id = self.nextId,
@@ -273,6 +314,11 @@ function Board:queueSpawn(size, opts, batch)
 		radiant = entry.radiant,
 		color = entry.color,
 		launchAt = entry.launchAt,
+		-- carried through so the client can mark a returning orb with
+		-- the cyan glow that pairs with the absorb — a deploy otherwise
+		-- looks exactly like an organic spawn, which is deliberate for
+		-- everything except that one visual
+		stashed = opts.stashed or nil,
 	}
 
 	if batch then
@@ -448,6 +494,12 @@ function Board:collapse()
 
 		self:_send(ToClient.COLLAPSE, CollapsePhase.WIPE)
 
+		-- A collapse takes the stash with it. Off-board is otherwise a
+		-- way to sit one out for free, and the toolbar should drain
+		-- alongside the board rather than before or after it — which is
+		-- why this fires here, with the wipe, and not at the top.
+		self.bridge.collapseWipe()
+
 		-- The ledger drops them immediately; the client takes a couple of
 		-- seconds to play the wipe out, and nothing in between can pay
 		-- anyone, because none of these ids exist any more.
@@ -557,8 +609,8 @@ end
 -- than read here so this file stays out of the Upgrades folder.
 function Board:onSell(id, check)
 	local entry = self:entry(id)
-	if not self:isLive(entry) then
-		return false, "not a live ball"
+	if not self:isOnBoard(entry) then
+		return false, "not a ball on this board"
 	end
 	if self.collapsing or self.paused then
 		return false, "board is not running"
@@ -600,7 +652,7 @@ function Board:onSellBox(ids, check)
 			break
 		end
 		local entry = self:entry(id)
-		if self:isLive(entry) and entry.kind == "ball" and not entry.radiant then
+		if self:isOnBoard(entry) and entry.kind == "ball" and not entry.radiant then
 			local allowed = check(entry)
 			if allowed then
 				local amount = Rules.sellValue("ball", entry.size, false, liveBalls)
@@ -654,6 +706,70 @@ function Board:onRelease(id)
 		return false, "unknown"
 	end
 	entry.held = nil
+	return true
+end
+
+-- ── stash ─────────────────────────────────────────────────────────────
+-- An orb leaving the board for a player's pocket. Worth nothing by
+-- itself: the size goes into the slot exactly as the ledger has it, and
+-- the money only ever happens later, if and when somebody sells the orb
+-- it comes back as.
+--
+-- `check` is StashHandler's own validator (is this kind stashable at
+-- all, can it come back radiant), passed in rather than read here so
+-- this file doesn't need to know what a stash slot is — the same shape
+-- onSell uses for the defuser gate.
+function Board:onStash(id, check)
+	local entry = self:entry(id)
+	if not self:isOnBoard(entry) then
+		return false, "not a ball on this board"
+	end
+	if self.collapsing or self.paused then
+		return false, "board is not running"
+	end
+
+	local allowed, reason = check(entry)
+	if not allowed then
+		return false, reason
+	end
+
+	local snapshot = {
+		kind = entry.kind,
+		size = entry.size,
+		color = entry.color,
+		radiant = entry.radiant,
+	}
+
+	self:_forget(id) -- the client has already played the pull and removed it
+	self:ensureBall()
+
+	return true, snapshot
+end
+
+-- ...and coming back out. It re-enters through the launch queue like
+-- everything else rather than appearing in front of the player, which
+-- is the whole design of the feature: a stash moves an orb through
+-- TIME, never through space.
+function Board:deployFromStash(kind, size, color, radiant)
+	if self.collapsing or self.paused then
+		return false, "board is not running"
+	end
+	if radiant and not Rules.radiantSupported(kind) then
+		-- Refused at the stash, so reaching this means a save written
+		-- against a build that still had that behaviour. Hand it back
+		-- plain rather than stranding it in the slot forever: the
+		-- radiance is already lost either way.
+		radiant = false
+	end
+
+	self:queueSpawn(size, {
+		kind = kind,
+		color = color,
+		radiant = radiant,
+		forceBall = true, -- a deploy is never a fresh roll
+		immediate = true,
+		stashed = true,
+	})
 	return true
 end
 

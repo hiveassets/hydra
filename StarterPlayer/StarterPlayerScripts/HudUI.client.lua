@@ -4,7 +4,7 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
-    Exported: 2026-09-22 13:33:38
+    Exported: 2026-09-22 14:24:27
 ]]
 --[[
 	HudUI (LocalScript) — StarterPlayerScripts

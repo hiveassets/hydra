@@ -3,7 +3,7 @@
     Path: ReplicatedStorage → Icon → Features
     Parent: Features
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-22 13:33:37
+    Exported: 2026-09-22 14:24:26
 ]]
 -- When designing your game for many devices and screen sizes, icons may occasionally
 -- particularly for smaller devices like phones, overlap with other icons or the bounds

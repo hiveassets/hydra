@@ -2,7 +2,7 @@
     PlayerModule (ModuleScript)
     Path: StarterPlayer → StarterPlayerScripts
     Parent: StarterPlayerScripts
-    Exported: 2026-09-22 13:33:38
+    Exported: 2026-09-22 14:24:27
 ]]
 --[[
 	PlayerModule - This module requires and instantiates the camera and control modules,

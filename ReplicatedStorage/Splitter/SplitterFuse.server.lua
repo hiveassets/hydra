@@ -5,7 +5,7 @@
     Properties:
         Disabled: false
         RunContext: Enum.RunContext.Legacy
-    Exported: 2026-09-22 13:33:38
+    Exported: 2026-09-22 14:24:27
 ]]
 --[[
 	SplitterFuse (Script) — place inside the Splitter template in ReplicatedStorage

@@ -2,7 +2,7 @@
     BoardService (ModuleScript)
     Path: ServerScriptService
     Parent: ServerScriptService
-    Exported: 2026-09-22 13:33:36
+    Exported: 2026-09-22 14:24:25
 ]]
 --[[
 	BoardService (ModuleScript) — place in ServerScriptService
@@ -123,6 +123,9 @@ local function makeBridge(player)
 			-- out before fading back to colour
 			return SellService.collapsePenalty(player)
 		end,
+		collapseWipe = function()
+			BoardService._fireCollapseWipe(player)
+		end,
 	}
 end
 
@@ -135,6 +138,29 @@ end
 function BoardService.forEach(fn)
 	for player, board in pairs(boards) do
 		fn(player, board)
+	end
+end
+
+-- ── collapse subscribers ──────────────────────────────────────────────
+-- Anything that has to be taken along with the board when it collapses
+-- registers here. The stash is the only one today.
+--
+-- Subscription rather than a direct call, so this module doesn't have
+-- to know StashHandler exists — StashHandler already requires this one,
+-- and two modules requiring each other is a deadlock rather than a
+-- design.
+local collapseSubscribers = {}
+
+function BoardService.onCollapseWipe(fn)
+	table.insert(collapseSubscribers, fn)
+end
+
+function BoardService._fireCollapseWipe(player)
+	for _, fn in ipairs(collapseSubscribers) do
+		local ok, err = pcall(fn, player)
+		if not ok then
+			warn("[BoardService] a collapse subscriber errored: " .. tostring(err))
+		end
 	end
 end
 

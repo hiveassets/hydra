@@ -2,7 +2,7 @@
     BoardConfig (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
-    Exported: 2026-09-22 13:33:38
+    Exported: 2026-09-22 14:24:27
 ]]
 --[[
 	BoardConfig (ModuleScript) — place directly in ReplicatedStorage
@@ -185,6 +185,19 @@ BoardConfig.TRICK_ZONE_RADIUS = 5
 BoardConfig.TRICK_SHOT_Y = -10
 BoardConfig.TRICK_ZONE_SERVER_SLACK = 12 -- how far they're allowed to have wandered by the time the report lands
 
+-- ── stash ─────────────────────────────────────────────────────────────
+-- The absorb: the orb flies into the player and shrinks away while a
+-- cyan highlight fades in over it. Deliberately half the length of a
+-- sell's own fade — a sell's beat is a warning that something is
+-- leaving, and a stash isn't warning anyone about anything, it's the
+-- player's own input landing.
+BoardConfig.STASH_RANGE = 20
+BoardConfig.STASH_PULL_TIME = 0.15
+BoardConfig.STASH_END_SIZE = 1 -- not 0: a part tweened to literally nothing renders as a speck for its last frame
+BoardConfig.STASH_FLASH_SIZE = 6 -- fixed, NOT the orb's own size: this is feedback on an input, not a readout of what left
+BoardConfig.STASH_COLOR = Color3.fromRGB(0, 255, 255)
+BoardConfig.STASH_DEPLOY_GLOW_TIME = 0.6 -- matches the spawn grow, so the glow is gone about when the orb reaches full size
+
 -- ── other players ─────────────────────────────────────────────────────
 -- How see-through everyone else is on your screen. 0.8 is "20% opaque":
 -- clearly there, clearly not part of your board. They can't touch your
@@ -209,8 +222,29 @@ BoardConfig.REMOTE_PLAYER_TRANSPARENCY = 0.8
 BoardConfig.MIN_TIME_BEFORE_FALL = 0.25
 
 -- How long after its scheduled launch the server treats a queued ball as
--- actually on the board. Roughly the time it takes to rise past COL_Y.
+-- having had time to reach the platform. This is a FALL guard and
+-- nothing else — see Board.isLive and Board.isOnBoard, which are two
+-- different questions for two different kinds of event.
 BoardConfig.LAUNCH_TO_LIVE = 0.3
+
+-- ── staying in sync ───────────────────────────────────────────────────
+-- The server's ledger and the client's parts are supposed to agree at
+-- all times, and every disagreement so far has been a bug worth fixing
+-- at the source. These two are the net under that: whatever goes wrong,
+-- the board comes back on its own within a couple of seconds instead of
+-- sitting there dead.
+
+-- The board is never legitimately empty — the server queues a
+-- replacement the moment the last ball leaves. So if this client has no
+-- balls at all for this long, the two sides have diverged and the
+-- client asks for the ledger back. Comfortably longer than a launch
+-- gap plus a round trip, so ordinary play never trips it.
+BoardConfig.EMPTY_BOARD_GRACE = 2.5
+
+-- Never ask for a resync more often than this, whatever asks for it. A
+-- resync is cheap but it re-spawns every ball, so a loop that asked for
+-- one every frame would be worse than whatever it was fixing.
+BoardConfig.RESYNC_COOLDOWN = 3
 
 -- Client to server messages allowed per second, per player, before the
 -- rest of that second's messages are dropped. Generous: a busy split
@@ -223,6 +257,11 @@ BoardConfig.SOUNDS = {
 	spawn = { id = "rbxassetid://12221967", volume = 1 },
 	spawnSpecial = { id = "rbxassetid://73276365795189", volume = 1 },
 	sell = { id = "rbxassetid://139583503249540", volume = 1 },
+	-- Deliberately not the sell cue: a stash pays nothing, and reusing
+	-- that sound made pocketing an orb read as selling it. Still a
+	-- placeholder (it's the mimic revert cue) — swap it when there's a
+	-- real one.
+	stash = { id = "rbxassetid://12222054", volume = 0.6, speed = 1.3 },
 	collapseAlarm = { id = "rbxassetid://12221990", volume = 1, speed = 0.7 },
 	collapseSell = { id = "rbxassetid://12222170", volume = 1 },
 	collapseTick = { id = "rbxassetid://12222170", volume = 1 },

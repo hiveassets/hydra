@@ -2,7 +2,7 @@
     UpgradeData (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
-    Exported: 2026-09-22 13:33:36
+    Exported: 2026-09-22 14:24:25
 ]]
 --[[
 	UpgradeData (ModuleScript) — ReplicatedStorage
@@ -112,41 +112,33 @@
 	it does.
 ]]
 
-local Players = game:GetService("Players")
-
 -- badge ids for the entries gated by `requiresBadge`/`requiresAnyBadge`
 -- below, named once so the divider's either/or gate can't drift from
 -- the entries it's meant to mirror
 local BRIBE_BADGE_ID = 3848961087513729
 local MIMIC_BADGE_ID = 3684816254175058 -- same badge MimicFuse awards on any board mimic's wake
 
--- price for the bribe entry below — no curve to speak of, unlike the
--- old queueClear this replaced: it's just 1/10th of the server's
--- average cash right now, rounded to the nearest BRIBE_STEP, floored
--- at BRIBE_MIN_PRICE, with no ceiling (a richer server should never
--- find this cheap). Recomputed fresh on every call, never cached.
+-- Price for the bribe entry below: 1% of the buyer's OWN balance,
+-- rounded to the nearest BRIBE_STEP, floored at BRIBE_MIN_PRICE, with
+-- no ceiling — a rich player should never find this cheap. Recomputed
+-- fresh on every call, never cached.
+--
+-- It used to read the average balance across the whole server, which
+-- made sense when everyone shared one board and one collapse. With a
+-- board each, what it costs you to keep YOUR board from collapsing
+-- should depend on what YOU have.
 local BRIBE_MIN_PRICE = 1000
-local BRIBE_STEP = 1000 -- price always rounds to a multiple of this, same "always reads as a round number" idea queueClearPrice used
+local BRIBE_STEP = 1000 -- always rounds to a multiple of this, so it reads as a round number
 
--- Players/leaderstats are already fully replicated to every client (the
--- same reason the leaderboard itself works) — so this gives ShopClient
--- and ShopHandler the exact same number independently, without a
--- queueClear-style attribute needing to be kept in sync from outside.
-local function averageServerCash()
-	local total, count = 0, 0
-	for _, plr in ipairs(Players:GetPlayers()) do
-		local leaderstats = plr:FindFirstChild("leaderstats")
-		local cash = leaderstats and leaderstats:FindFirstChild("$$$")
-		if cash then
-			total += cash.Value
-			count += 1
-		end
-	end
-	return count > 0 and (total / count) or 0
-end
+-- leaderstats is replicated, so the client and the server each work
+-- this out independently and land on the same number without anything
+-- being sent over.
+local function bribePrice(player)
+	local leaderstats = player and player:FindFirstChild("leaderstats")
+	local cash = leaderstats and leaderstats:FindFirstChild("$$$")
+	local balance = cash and cash.Value or 0
 
-local function bribePrice()
-	local rounded = math.floor((averageServerCash() / 100) / BRIBE_STEP + 0.5) * BRIBE_STEP
+	local rounded = math.floor((balance / 100) / BRIBE_STEP + 0.5) * BRIBE_STEP
 	return math.max(BRIBE_MIN_PRICE, rounded)
 end
 

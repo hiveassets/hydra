@@ -3,7 +3,7 @@
     Path: ReplicatedStorage → Icon → Features → Themes
     Parent: Themes
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-22 13:33:37
+    Exported: 2026-09-22 14:24:26
 ]]
 -- Themes in v3 work simply by applying the value (agument[3])
 -- to the property (agument[2]) of an instance within the icon which

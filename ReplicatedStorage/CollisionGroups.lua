@@ -2,7 +2,7 @@
     CollisionGroups (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
-    Exported: 2026-09-22 13:33:37
+    Exported: 2026-09-22 14:24:26
 ]]
 --[[
 	CollisionGroups (ModuleScript) — place directly in ReplicatedStorage

@@ -3,7 +3,7 @@
     Path: ReplicatedStorage → Icon → Elements
     Parent: Elements
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-22 13:33:37
+    Exported: 2026-09-22 14:24:26
 ]]
 local hasBecomeOldTheme = false
 local previousInsetHeight = 0

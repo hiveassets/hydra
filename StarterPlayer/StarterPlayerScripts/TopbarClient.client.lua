@@ -4,7 +4,7 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
-    Exported: 2026-09-22 13:33:39
+    Exported: 2026-09-22 14:24:28
 ]]
 --[[
 	TopbarClient (LocalScript) — StarterPlayerScripts

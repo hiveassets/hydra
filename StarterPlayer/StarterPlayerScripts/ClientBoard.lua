@@ -2,7 +2,7 @@
     ClientBoard (ModuleScript)
     Path: StarterPlayer → StarterPlayerScripts
     Parent: StarterPlayerScripts
-    Exported: 2026-09-22 13:33:38
+    Exported: 2026-09-22 14:24:27
 ]]
 --[[
 	ClientBoard (ModuleScript) — place in StarterPlayerScripts
@@ -51,6 +51,7 @@
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
+local Players = game:GetService("Players")
 
 local Rep = game:GetService("ReplicatedStorage")
 local Config = require(Rep:WaitForChild("BoardConfig"))
@@ -177,6 +178,29 @@ local function forget(entry)
 	end
 end
 
+-- ── resync ────────────────────────────────────────────────────────────
+-- READY makes the server RESET this board and re-send its whole ledger,
+-- which is what this client asks for on startup. It's also the repair
+-- for any disagreement: rather than reasoning about which side is
+-- wrong, throw away what's here and rebuild from the authority.
+--
+-- It isn't free — every ball is re-created at its launch position, so a
+-- resync mid-play is a visible hiccup — but it is total, and a hiccup
+-- beats a board that has quietly stopped working.
+
+local lastResyncAt = -math.huge
+
+local function requestResync(why)
+	local t = os.clock()
+	if t - lastResyncAt < Config.RESYNC_COOLDOWN then
+		return false
+	end
+	lastResyncAt = t
+	warn(("[ClientBoard] asking the server to resend the board: %s"):format(why))
+	send(ToServer.READY)
+	return true
+end
+
 function ClientBoard.idOf(part)
 	local entry = byPart[part]
 	return entry and entry.id
@@ -224,6 +248,10 @@ function ClientBoard.hold(part)
 		return false
 	end
 	entry.held = true
+	-- Also an attribute, because other scripts ask the PART rather than
+	-- the board — StashClient checks it before pocketing something, so
+	-- an orb can't be taken out of your own hands.
+	part:SetAttribute("Held", true)
 	send(ToServer.HOLD, entry.id)
 	return true
 end
@@ -234,8 +262,87 @@ function ClientBoard.release(part)
 		return false
 	end
 	entry.held = nil
+	part:SetAttribute("Held", nil)
 	send(ToServer.RELEASE, entry.id)
 	return true
+end
+
+-- ── stash ─────────────────────────────────────────────────────────────
+
+-- The absorb: the orb flies into the player and shrinks away under a
+-- cyan highlight, then flashes and is gone. Returns its id so the caller
+-- can tell the server which orb went; nil if this one can't be taken.
+--
+-- The whole animation used to run on the server, on a replicated part,
+-- frame by frame — every step of it travelling to every client in the
+-- game so that one player could watch their own orb get pocketed. It's
+-- all local now, which is why it starts on the frame the key is pressed.
+function ClientBoard.stashAbsorb(part)
+	local entry = byPart[part]
+	if not entry or entry.selling or entry.stashing or collapsing or paused then
+		return nil
+	end
+	if entry.state ~= "settled" and entry.state ~= "ascending" then
+		return nil
+	end
+
+	entry.stashing = true
+	entry.behavioursAlive = false -- a radiant orb stops cycling, so the highlight isn't fighting it
+
+	local id = entry.id
+	local size = entry.size
+	local startPos = part.Position
+	local startSize = part.Size
+
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanQuery = false -- so it can't be re-targeted mid-flight
+
+	local highlight = BoardEffects.fadeIn(part, Config.STASH_COLOR, Config.STASH_PULL_TIME)
+
+	task.spawn(function()
+		local elapsed = 0
+		while elapsed < Config.STASH_PULL_TIME do
+			local dt = RunService.Heartbeat:Wait()
+			if not part.Parent then
+				return
+			end
+			elapsed += dt
+
+			local alpha = math.clamp(elapsed / Config.STASH_PULL_TIME, 0, 1)
+			-- expo-out: quick off the mark, easing into its final size
+			-- right as it arrives
+			local sizeAlpha = 1 - 2 ^ (-10 * alpha)
+
+			-- the target is re-read rather than captured: the player can
+			-- keep running, and the orb should follow them rather than
+			-- converge on where they were standing when the key landed
+			local character = Players.LocalPlayer.Character
+			local hrp = character and character:FindFirstChild("HumanoidRootPart")
+			local target = hrp and hrp.Position or startPos
+
+			part.CFrame = CFrame.new(startPos:Lerp(target, alpha))
+			part.Size = startSize:Lerp(
+				Vector3.new(Config.STASH_END_SIZE, Config.STASH_END_SIZE, Config.STASH_END_SIZE),
+				sizeAlpha
+			)
+		end
+
+		local arrivedAt = part.Parent and part.Position or startPos
+		if highlight.Parent then
+			highlight:Destroy()
+		end
+		forget(entry)
+
+		-- A fixed flash size rather than the orb's own: this is feedback
+		-- on an input landing, not a readout of what left the board, so a
+		-- size-400 orb shouldn't white out the screen while a size-3 one
+		-- barely registers.
+		BoardEffects.flash(arrivedAt, Config.STASH_FLASH_SIZE, Config.STASH_COLOR)
+		BoardEffects.soundAt(arrivedAt, Config.SOUNDS.stash)
+	end)
+
+	return id, size
 end
 
 function ClientBoard.reportTrickShot()
@@ -295,6 +402,31 @@ local function launch(entry)
 		spawnSymbol and spawnSymbol.Position or Config.SPAWN_POS,
 		special and Config.SOUNDS.spawnSpecial or Config.SOUNDS.spawn
 	)
+
+	-- An orb coming back out of the stash is the absorb run backwards:
+	-- it launches as a solid cyan shape and resolves into its real
+	-- colour as it rises. Everything else about it — the arc, the
+	-- stagger, the grow — is an ordinary spawn, deliberately.
+	if entry.stashed then
+		BoardEffects.flash(part.Position, Config.STASH_FLASH_SIZE, Config.STASH_COLOR, true)
+
+		local glow = Instance.new("Highlight")
+		glow.FillColor = Config.STASH_COLOR
+		glow.FillTransparency = 0 -- opaque to start; the fade is what reveals the orb
+		glow.OutlineTransparency = 1
+		glow.DepthMode = Enum.HighlightDepthMode.Occluded
+		glow.Parent = part
+
+		local fade = TweenService:Create(
+			glow,
+			TweenInfo.new(Config.STASH_DEPLOY_GLOW_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{ FillTransparency = 1 }
+		)
+		fade.Completed:Connect(function()
+			glow:Destroy()
+		end)
+		fade:Play()
+	end
 end
 
 local function addSpawnEntries(list)
@@ -307,6 +439,7 @@ local function addSpawnEntries(list)
 				radiant = data.radiant,
 				color = data.color,
 				launchAt = data.launchAt,
+				stashed = data.stashed,
 				state = "queued",
 			}
 			entries[entry.id] = entry
@@ -763,6 +896,52 @@ local function onServerMessage(op, a, b)
 		-- something the ledger disagreed with. Worth knowing about in
 		-- Studio rather than silently diverging.
 		warn(("[ClientBoard] the server refused a message about ball %s: %s"):format(tostring(a), tostring(b)))
+
+		-- ...and "silently diverging" is exactly what used to happen
+		-- next. Most of what this client reports it has ALREADY acted
+		-- on locally — a sold ball is hidden on the click, a stashed one
+		-- has played its pull — so a refusal leaves a ball gone here and
+		-- still on the ledger there, forever. The server then counts it
+		-- as a ball the board already has and never queues a
+		-- replacement.
+		--
+		-- So don't try to work out which of us is wrong. Ask for the
+		-- ledger back and rebuild from it; the server is the authority
+		-- by definition.
+		requestResync("the server refused something we told it")
+	end
+end
+
+-- ── the empty-board watchdog ──────────────────────────────────────────
+-- The server's rule is that a board is never left empty: the last ball
+-- leaving queues a replacement before the payout is even sent. So an
+-- empty board here, for longer than it could possibly take one to
+-- arrive, means the two sides no longer agree about what this board
+-- holds — and nothing on this side can fix that by reasoning, because
+-- the ledger is the authority.
+--
+-- This is deliberately a check on the SYMPTOM rather than on any
+-- particular cause. The cause we know about (a refused sell leaving a
+-- ball hidden here and still counted there) is fixed properly in
+-- Board.isOnBoard, and the REJECT handler above now repairs itself. This
+-- sits underneath both, so that a bug we haven't met yet — a special in
+-- phase 3 mishandling its own removal, say — costs a two-second pause
+-- instead of a dead board and a rejoin.
+
+local emptyFor = 0
+
+local function stepEmptyWatchdog(dt)
+	-- A collapse empties the board on purpose, and a paused board isn't
+	-- meant to be doing anything at all.
+	if collapsing or paused or next(entries) ~= nil then
+		emptyFor = 0
+		return
+	end
+
+	emptyFor += dt
+	if emptyFor >= Config.EMPTY_BOARD_GRACE then
+		emptyFor = 0
+		requestResync("the board has been empty too long")
 	end
 end
 
@@ -802,7 +981,7 @@ function ClientBoard.start()
 
 	toClient.OnClientEvent:Connect(onServerMessage)
 
-	RunService.Heartbeat:Connect(function()
+	RunService.Heartbeat:Connect(function(dt)
 		stepLaunches()
 		for _, entry in pairs(entries) do
 			if entry.part then
@@ -810,6 +989,7 @@ function ClientBoard.start()
 			end
 		end
 		stepDisplays()
+		stepEmptyWatchdog(dt)
 	end)
 
 	-- Ask for whatever the server already has for us. Sent last, so

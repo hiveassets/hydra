@@ -3,7 +3,7 @@
 
 return {
     sourceFile = "hydra.rbxl",
-    exportDate = "2026-09-22 13:33:40",
+    exportDate = "2026-09-22 14:24:28",
     luneVersion = "0.9.3",
     structure = "Service-based organization with nested script support",
     notes = {
