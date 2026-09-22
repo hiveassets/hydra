@@ -2,7 +2,7 @@
     FOVController (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
-    Exported: 2026-09-22 14:24:26
+    Exported: 2026-09-22 15:18:20
 ]]
 --[[
 	FOVController (ModuleScript — place in ReplicatedStorage)

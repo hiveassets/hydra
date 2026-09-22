@@ -2,7 +2,7 @@
     BoardConfig (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
-    Exported: 2026-09-22 14:24:27
+    Exported: 2026-09-22 15:18:20
 ]]
 --[[
 	BoardConfig (ModuleScript) — place directly in ReplicatedStorage
@@ -40,10 +40,13 @@ local BoardConfig = {}
 
 -- ── phase flags ───────────────────────────────────────────────────────
 -- Specials (bomb/magnet/mimic/splitter/merger) come back one at a time
--- in phase 3. Until then the roll below is skipped entirely rather than
--- the weights being zeroed, so there's no chance of a stray special
--- appearing from a rounding edge.
-BoardConfig.SPECIALS_ENABLED = false
+-- in phase 3. The master switch is on from step 1; which kinds can
+-- actually roll is SPECIAL_WEIGHTS below, where everything that hasn't
+-- landed yet sits at 0.
+--
+-- Turning this back off is the one-line way to get a plain-ball board
+-- again if a special ever misbehaves mid-playtest.
+BoardConfig.SPECIALS_ENABLED = true
 
 -- ── launch and settle ────────────────────────────────────────────────
 BoardConfig.SPAWN_POS = Vector3.new(0, -25, 0)
@@ -100,12 +103,155 @@ BoardConfig.SPECIAL_TOTAL_CHANCE = 0.15 -- share of cleared rolls that become so
 BoardConfig.SPECIAL_COOLDOWN = 10       -- seconds between special rolls, shared across every kind
 BoardConfig.SPECIAL_MIN_BALLS = 2       -- board must already have this many balls before a special can roll
 
+-- Phase 3 brings the specials back ONE AT A TIME, and a kind at weight
+-- 0 never rolls. So this table is the switchboard for that: each step
+-- restores its own kind's weight and nothing else, and the board stays
+-- playable in between. The numbers in the comment are what each one
+-- goes back to — don't re-derive them, they're the originals.
+--
+--   bomb      5      ← step 1, live
+--   magnet    3      ← step 2
+--   splitter  2      ← step 3
+--   merger    1      ← step 4
+--   mimic     0.05   ← step 5
+--
+-- The radiant variants (step 6) aren't kinds of their own; they're the
+-- radiant overlay rolling on top of one of these, gated by
+-- BoardRules.radiantSupported.
 BoardConfig.SPECIAL_WEIGHTS = {
 	bomb = 5,
-	magnet = 3,
-	mimic = 0.05,
-	splitter = 2,
-	merger = 1,
+	magnet = 0,
+	mimic = 0,
+	splitter = 0,
+	merger = 0,
+}
+
+-- ── what each kind looks like ─────────────────────────────────────────
+-- One row per kind: which template it's cloned from, and the two things
+-- the board is allowed to paint over afterwards.
+--
+-- THE TEMPLATE OWNS THE LOOK. The board owns size, position, collision
+-- and physics, and nothing else. Reflectance, material, surface types,
+-- decals, the billboard's own settings — none of that is ever written
+-- by ClientBoard, so whatever you set on the template in Studio is what
+-- shows up. That's deliberate: a special is recognisable at a glance
+-- BECAUSE it looks different, and a launch routine that normalised
+-- every orb would quietly undo the thing that makes the board readable.
+--
+--   template     the Instance name in ReplicatedStorage. The behaviour
+--                module under Behaviours shares this name.
+--   ledgerColor  true if the board paints it with the colour the server
+--                rolled. Only orbs that are SUPPOSED to be a random
+--                colour: a bomb painted lilac stops reading as a bomb.
+--                A mimic is true precisely because it has to pass for
+--                an ordinary orb.
+--   showsSize    true if the board writes the size into its numDisplay.
+--                A bomb shows "!!" and a magnet "><" instead — baked
+--                into the template, swapped for a price by SellClient
+--                in sell mode, and written back by it afterwards. A
+--                mimic shows a number, for the same reason it takes a
+--                random colour.
+--
+-- The server never touches any of this; it only ever deals in the kind
+-- NAME. A client that swapped a template changes what its own orb looks
+-- like, not what the ledger says it is or what it pays.
+BoardConfig.LOOK = {
+	ball     = { template = "Ball",     ledgerColor = true,  showsSize = true },
+	bomb     = { template = "Bomb",     ledgerColor = false, showsSize = false },
+	magnet   = { template = "Magnet",   ledgerColor = false, showsSize = false },
+	mimic    = { template = "Mimic",    ledgerColor = true,  showsSize = true },
+	splitter = { template = "Splitter", ledgerColor = false, showsSize = false },
+	merger   = { template = "Merger",   ledgerColor = false, showsSize = false },
+}
+
+-- ── bomb ──────────────────────────────────────────────────────────────
+-- Every number here came straight off BombFuse; nothing is retuned.
+-- The two PHASES are the fuse: 16 flickers at 0.125s then 8 at 0.0625s,
+-- which is the 2.5s total the anti-cheat notes in the plan refer to.
+BoardConfig.BOMB = {
+	OFF_COLOR = Color3.fromRGB(27, 41, 53),
+	ON_COLOR = Color3.fromRGB(255, 0, 0),
+	PHASES = {
+		{ gap = 0.125, n = 16 },
+		{ gap = 0.0625, n = 8 },
+	},
+
+	-- The real blast. Radius scales with the bomb's ledger size, and the
+	-- push is an impulse rather than a velocity so a big orb takes the
+	-- same hit as a small one relative to its mass.
+	RADIUS_PER_SIZE = 6,
+	IMPULSE_PER_SIZE = 5000,
+
+	-- The VFX ball now covers exactly the area the force reaches.
+	--
+	-- It never used to, and the reason is a units bug rather than a
+	-- taste decision. A Ball part's Size is its DIAMETER, and the old
+	-- code built it as `Vector3.new(r, r, r) * 2` with `r = radius *
+	-- 0.5` — so the sphere's diameter came out equal to the blast
+	-- radius, which made its radius half of it. Every explosion since
+	-- has drawn at half the size it actually hit, which is why orbs
+	-- visibly outside the fireball still went flying.
+	--
+	-- At 1 the sphere's diameter is twice the blast radius, so its edge
+	-- sits exactly where the falloff reaches zero. Lower it to shrink
+	-- the fireball inside the real blast again; the force never reads
+	-- this number.
+	VFX_SCALE = 1,
+	VFX_TIME = 0.3,
+	VFX_START = Color3.fromRGB(127, 68, 0),
+	VFX_END = Color3.fromRGB(127, 0, 0),
+
+	FLASH_SCALE = 0.6,
+	FLASH_TIME = 0.1,
+	FLASH_IMAGE = "rbxassetid://131187911056182",
+	FLASH_START = Color3.new(1, 1, 1),
+	FLASH_COLOR = Color3.fromRGB(255, 255, 0),
+	FLASH_RECOLOR_AT = 0.03,
+
+	-- ── getting hit ───────────────────────────────────────────────────
+	-- Everything the blast catches flashes red and fades, so you can see
+	-- what it reached rather than inferring it from what moved. Only the
+	-- orbs that were actually pushed light up, so the highlight and the
+	-- impulse always agree.
+	HIT_COLOR = Color3.fromRGB(255, 0, 0),
+	HIT_FADE_TIME = 0.5,
+
+	-- Kinds that take the push but not the flash. A splitter or a merger
+	-- is a tool sitting on the board rather than something the blast
+	-- happened TO, and marking it as damaged reads as a state change it
+	-- hasn't had.
+	HIT_FLASH_EXCLUDES = {
+		splitter = true,
+		merger = true,
+	},
+
+	-- ── screen shake ──────────────────────────────────────────────────
+	-- Amplitude is roughly the peak camera offset in studs, scaled by
+	-- the bomb's size so a big one lands harder.
+	--
+	-- Linear in size. A root curve was tried first and the small end felt
+	-- right, but everything above about size 20 came out limp — the
+	-- curve flattens exactly where the bombs get interesting.
+	--
+	--   size    3 → 0.30      size   50 → 2.65
+	--   size    5 → 0.40      size  100 → 5.00 (capped)
+	--   size   20 → 1.15      size  400 → 5.00 (capped)
+	--
+	-- The low end is within a few hundredths of where the root curve had
+	-- it, so what felt good there is unchanged; everything from 10 up
+	-- hits harder, and much harder past 50.
+	--
+	-- Linear has to saturate somewhere, and with these numbers that's
+	-- size 97. Past it every bomb shakes identically. Raising SHAKE_MAX
+	-- moves that line — at 5 studs the camera is already being thrown a
+	-- long way, so if size 100 and size 400 need to feel different,
+	-- that's the number to push rather than SHAKE_PER_SIZE.
+	SHAKE_BASE = 0.15,     -- floor, so a tiny bomb still registers
+	SHAKE_PER_SIZE = 0.05, -- studs per unit of size — the main tuning knob
+	SHAKE_MAX = 5,         -- ceiling; also where the linear curve goes flat
+	SHAKE_TIME = 0.45,
+	SHAKE_FREQUENCY = 20, -- noise cycles a second: higher is a rattle, lower is a heave
+	SHAKE_ROTATION = 0.8, -- degrees of camera roll per stud of offset
 }
 
 -- ── radiant ───────────────────────────────────────────────────────────
@@ -267,6 +413,14 @@ BoardConfig.SOUNDS = {
 	collapseTick = { id = "rbxassetid://12222170", volume = 1 },
 	collapseTension = { id = "rbxassetid://87758060178138", volume = 0.7 },
 	collapseMessage = { id = "rbxassetid://135083591486620", volume = 1 },
+
+	-- The bomb. Both of these used to go out through SoundEvents so that
+	-- every client built its own Sound rather than waiting on the
+	-- server's Play() to replicate — a whole mechanism that existed
+	-- because the bomb was a server object. It's a local part on a local
+	-- board now, so they're just sounds.
+	bombFlicker = { id = "rbxassetid://12221976", volume = 1 },
+	bombBoom = { id = "rbxassetid://12222084", volume = 1 },
 }
 
 -- ── collapse visuals (client-side, but shared so one file owns tuning) ─

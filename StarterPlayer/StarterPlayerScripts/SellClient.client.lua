@@ -4,7 +4,7 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
-    Exported: 2026-09-22 14:24:28
+    Exported: 2026-09-22 15:18:22
 ]]
 --[[
 	SellClient (LocalScript) — StarterPlayerScripts
@@ -902,7 +902,7 @@ local function updateBoxSelect()
 	-- shouldn't light back up just because the box happens to be
 	-- passing over its now-invisible or about-to-vanish hitbox
 	for _, obj in ipairs(bf:GetChildren()) do
-		if obj.Name == ballT.Name and not obj:GetAttribute("IsRadiant") and not selling[obj] and not obj:GetAttribute("PendingSell") then
+		if obj.Name == ballT.Name and not obj:GetAttribute("IsRadiant") and not selling[obj] and not obj:GetAttribute("PendingSell") and not obj:GetAttribute("Split") then
 			local screen, onScreen = camera:WorldToViewportPoint(obj.Position)
 			local inside = onScreen
 				and screen.X >= topLeft.X and screen.X <= topLeft.X + size.X

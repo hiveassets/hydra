@@ -2,7 +2,7 @@
     Board (ModuleScript)
     Path: ServerScriptService
     Parent: ServerScriptService
-    Exported: 2026-09-22 14:24:25
+    Exported: 2026-09-22 15:18:19
 ]]
 --[[
 	Board (ModuleScript) — place in ServerScriptService
@@ -271,8 +271,39 @@ function Board:queueSpawn(size, opts, batch)
 		end
 	end
 
+	-- The radiant overlay rolls on top of whatever the slot was going to
+	-- spawn — but only for a kind that has a radiant form implemented.
+	--
+	-- This gate was missing and didn't matter until now: with specials
+	-- off, `kind` was always "ball", which supports radiant. The moment
+	-- the bomb came back, the roll could have produced a radiant bomb —
+	-- an orb with no radiant behaviour to run, whose colour loop would
+	-- fight the fuse's own flicker for the same property, and which
+	-- sells for 6x instead of 2x. Paying triple for a variant that
+	-- doesn't exist yet.
+	--
+	-- radiantSupported is the seam for step 6: each radiant variant
+	-- turns on by returning true for its kind there, and nothing else in
+	-- this file changes.
 	local radiant = opts.radiant == true
-	if not radiant and not opts.forceBall and t - self.lastRadiantAt >= Config.RADIANT_COOLDOWN then
+
+	if radiant and not Rules.radiantSupported(kind) then
+		-- An explicit request (an admin summon) for a combination that
+		-- doesn't exist. Clamped rather than refused, because queueSpawn
+		-- is the one place every spawn goes through and it should never
+		-- be the thing that stops a board restocking. Board:summon
+		-- checks this up front and says so properly.
+		if RunService:IsStudio() then
+			warn(("[Board] dropped radiant from a '%s' — no radiant form for that kind yet"):format(kind))
+		end
+		radiant = false
+	end
+
+	if not radiant
+		and not opts.forceBall
+		and Rules.radiantSupported(kind)
+		and t - self.lastRadiantAt >= Config.RADIANT_COOLDOWN
+	then
 		if Rules.rollRadiant(rand) then
 			radiant = true
 			self.lastRadiantAt = t
@@ -286,7 +317,15 @@ function Board:queueSpawn(size, opts, batch)
 	-- It deliberately doesn't touch lastLaunchAt either, so it slots in
 	-- alongside the queue rather than pushing everything else back.
 	local launchAt
-	if opts.immediate then
+	if opts.at then
+		-- An explicit stamp, from a caller laying out its own run of
+		-- launches: !summon builds a staggered block starting now, so
+		-- its orbs land ahead of anything already waiting. Like
+		-- `immediate` it deliberately leaves lastLaunchAt alone, so the
+		-- organic queue carries on from where it was rather than being
+		-- pushed back by the summon.
+		launchAt = opts.at
+	elseif opts.immediate then
 		launchAt = t
 	else
 		launchAt = math.max(t, self.lastLaunchAt + Config.GAP)
@@ -636,25 +675,38 @@ end
 -- The box-select counterpart: one payout, one log line, and every id
 -- checked exactly the way a single sell is.
 function Board:onSellBox(ids, check)
+	-- Every exit from here returns a third value: how many orbs the
+	-- client hid that this ledger still holds. That count, and only that
+	-- count, is what decides whether the board gets rebuilt.
 	if typeof(ids) ~= "table" then
-		return false, "malformed"
+		-- No way to know what they hid, so assume the worst.
+		return false, "malformed", 1
 	end
 	if self.collapsing or self.paused then
-		return false, "board is not running"
+		-- The whole selection is hidden on their side and still here on
+		-- ours. (A collapse is about to wipe the board anyway, and
+		-- reject() sits that case out on its own.)
+		return false, "board is not running", #ids
 	end
 
 	local liveBalls = self:liveBallCount()
 	local total, sold, largest = 0, 0, 0
 	local worthless = false
 
+	-- Ids this ledger STILL HOLDS that didn't sell. Deliberately not
+	-- "ids that didn't sell": an id the ledger has already dropped is an
+	-- orb both sides agree is gone, which is an ordinary race between a
+	-- marquee and a falling orb rather than anything to repair. Only an
+	-- orb the client hid while this side kept it is a real divergence.
+	local stranded = 0
+
 	for _, id in ipairs(ids) do
 		if sold >= 300 then -- sanity cap against a forged giant array
 			break
 		end
 		local entry = self:entry(id)
-		if self:isOnBoard(entry) and entry.kind == "ball" and not entry.radiant then
-			local allowed = check(entry)
-			if allowed then
+		if entry then
+			if self:isOnBoard(entry) and entry.kind == "ball" and not entry.radiant and check(entry) then
 				local amount = Rules.sellValue("ball", entry.size, false, liveBalls)
 				if amount == 0 then
 					worthless = true
@@ -663,12 +715,18 @@ function Board:onSellBox(ids, check)
 				largest = math.max(largest, amount)
 				sold += 1
 				self:_forget(id)
+			else
+				stranded += 1
 			end
 		end
 	end
 
 	if sold == 0 then
-		return false, "nothing to sell"
+		-- Nothing sold, and if nothing was stranded either then every
+		-- orb in the selection had already left this board too — a
+		-- marquee dragged across orbs on their way off the edge. No
+		-- payout, no log line, and nothing to repair.
+		return false, "nothing to sell", stranded
 	end
 
 	self.bridge.pay(total)
@@ -677,7 +735,16 @@ function Board:onSellBox(ids, check)
 
 	self:ensureBall()
 	self:_enforceCap()
-	return true, total
+
+	-- The third return is the count above: orbs the client hid that this
+	-- ledger still holds. That's the divergence that stops a board
+	-- restocking, and BoardService turns a non-zero count into a resync.
+	--
+	-- In normal play it's always 0 — the marquee filters to exactly what
+	-- this loop accepts (plain, non-radiant, settled or rising, not
+	-- already selling) — so it's the backstop for a crafted client, or
+	-- for the two filters drifting apart in a later phase.
+	return true, total, stranded
 end
 
 -- Something left the board for a reason that pays nobody: a bomb went
@@ -773,11 +840,66 @@ function Board:deployFromStash(kind, size, color, radiant)
 	return true
 end
 
+-- Tell a client its claim about an orb was refused, so it can put its
+-- board back. This matters because of the order everything happens in:
+-- a client hides a sold orb on the click and plays a stash pull before
+-- it asks, so a refusal that goes unanswered leaves the orb gone there
+-- and still counted here — the softlock from phase 2b.
+--
+-- The client doesn't try to repair one orb from this; it asks for the
+-- whole ledger back. That's heavier than it needs to be and completely
+-- immune to being subtly wrong, which is the right trade for a path
+-- that shouldn't run at all.
+--
+-- Skipped during a collapse: the board is being wiped and re-stocked
+-- anyway, so a resync would only fight the animation.
+function Board:reject(id, reason)
+	if self.collapsing then
+		return
+	end
+
+	-- An id this ledger no longer holds is NOT a divergence — it's
+	-- agreement. The client hid an orb that this side had already
+	-- removed: it fell a beat before the click landed, or the cap
+	-- auto-sold it. Both sides now think that orb is gone, which is
+	-- exactly right, and rebuilding the whole board would cost a very
+	-- visible hiccup to change nothing.
+	--
+	-- This guard is the difference between repairing a real divergence
+	-- and punishing an ordinary race. Without it, every bulk sell that
+	-- happened to catch a falling orb resynced the board.
+	if typeof(id) == "number" and self.balls[id] == nil then
+		return
+	end
+
+	self:_send(ToClient.REJECT, id, reason)
+end
+
 function Board:onExpired(id)
 	local entry = self:entry(id)
 	if not entry then
 		return false, "unknown"
 	end
+
+	-- Only a special ever expires. A plain orb always leaves by a route
+	-- that either pays for it or replaces it — sold, stashed, fallen,
+	-- auto-sold — so a plain orb arriving here is an orb being quietly
+	-- deleted, which is never something this game wants to do and is
+	-- always a bug on the client rather than an attack (it destroys the
+	-- player's own money).
+	--
+	-- Refused silently, and deliberately without a REJECT: a rejection
+	-- now costs a full board resync, which is a heavy price for
+	-- something that has already done no damage. The Studio warn is the
+	-- trail to follow instead.
+	if entry.kind == "ball" then
+		if RunService:IsStudio() then
+			warn(("[Board] %s's client tried to expire plain orb %d — only specials expire")
+				:format(self.player.Name, id))
+		end
+		return false, "a plain orb can't expire"
+	end
+
 	self:_forget(id)
 	self:ensureBall()
 	return true
@@ -823,15 +945,62 @@ function Board:summon(kind, size, count, radiant)
 	if self.collapsing then
 		return false, "can't summon during a collapse"
 	end
+
+	-- Checked against the kinds that actually have a template, so a typo
+	-- comes back as a message in chat rather than as an orb that spawns
+	-- looking like a plain ball and behaving like nothing. Worth having
+	-- now: phase 3 is tested almost entirely through this command.
+	if not Config.LOOK[kind] then
+		local known = {}
+		for name in pairs(Config.LOOK) do
+			table.insert(known, name)
+		end
+		table.sort(known)
+		return false, ("unknown kind '%s' — try one of: %s"):format(tostring(kind), table.concat(known, ", "))
+	end
+
+	if radiant and not Rules.radiantSupported(kind) then
+		return false, ("there's no radiant %s yet"):format(kind)
+	end
+
 	count = math.clamp(count or 1, 1, 300)
 
+	-- A summon goes to the FRONT of the launch queue: you asked for these
+	-- orbs, so they shouldn't wait out a backlog of organic spawns first.
+	--
+	-- That's done with stamps rather than by reordering anything. Each
+	-- summoned orb gets an explicit time starting from now and stepping
+	-- by the usual gap, which puts every one of them earlier than
+	-- whatever is already pending — and the client sorts its own queue by
+	-- stamp, so they come out first without either side being told about
+	-- a "front". Still staggered, because fifty orbs materialising in one
+	-- frame is a pile, not a summon.
+	--
+	-- Before this they went through the ordinary path, which stamps from
+	-- lastLaunchAt and therefore put them BEHIND everything queued. On a
+	-- busy board a summon could take several seconds to show up, which
+	-- read as the command not working.
+	--
+	-- Successive summons stagger against each other too, not just
+	-- internally. Two `!summon`s a moment apart would otherwise both
+	-- start from now and stamp orbs at identical times, landing them in
+	-- the same frame on top of each other at the spawn point — which is
+	-- exactly what testing a special looks like.
+	local startAt = math.max(now(), (self.lastSummonAt or 0) + Config.GAP)
+
 	local batch = {}
-	for _ = 1, count do
+	for index = 1, count do
 		-- forceBall here means "don't roll for anything" — an admin
 		-- asked for a specific kind, so neither the special roll nor the
 		-- radiant roll gets a say.
-		self:queueSpawn(size, { kind = kind, radiant = radiant, forceBall = true }, batch)
+		self:queueSpawn(size, {
+			kind = kind,
+			radiant = radiant,
+			forceBall = true,
+			at = startAt + (index - 1) * Config.GAP,
+		}, batch)
 	end
+	self.lastSummonAt = startAt + (count - 1) * Config.GAP
 	-- A big enough summon tips the board into a collapse partway through
 	-- the loop above, which clears the ledger — so the batch would be
 	-- describing balls the server has already forgotten. Sending it

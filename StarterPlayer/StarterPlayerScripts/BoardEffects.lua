@@ -2,7 +2,7 @@
     BoardEffects (ModuleScript)
     Path: StarterPlayer → StarterPlayerScripts
     Parent: StarterPlayerScripts
-    Exported: 2026-09-22 14:24:27
+    Exported: 2026-09-22 15:18:20
 ]]
 --[[
 	BoardEffects (ModuleScript) — place in StarterPlayerScripts
@@ -30,6 +30,7 @@
 ]]
 
 local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 local SoundService = game:GetService("SoundService")
 local ContentProvider = game:GetService("ContentProvider")
 local Workspace = game:GetService("Workspace")
@@ -85,6 +86,29 @@ function BoardEffects.soundOn(part, sound, pitch)
 	s.Ended:Connect(function()
 		s:Destroy()
 	end)
+end
+
+-- A cue that repeats on the same object — a bomb's flicker tick, which
+-- fires twelve times on one part. Keeps a single Sound there and
+-- restarts it instead of building a fresh instance per tick: a new
+-- Sound has to resolve its asset before it can play, so a rapid series
+-- of them clips and drifts, where a restarted one is already loaded and
+-- lands exactly on the beat. The old SoundEvents relay called this
+-- "attachedReused" and did it for the same reason.
+function BoardEffects.soundReusedOn(part, sound, pitch)
+	local name = "Cue_" .. (sound.id:gsub("%W", ""))
+	local s = part:FindFirstChild(name)
+	if not (s and s:IsA("Sound")) then
+		s = Instance.new("Sound")
+		s.Name = name
+		s.SoundId = sound.id
+		s.Parent = part
+	end
+	s.Volume = sound.volume or 1
+	s.PlaybackSpeed = pitch or sound.speed or 1
+	s.TimePosition = 0
+	s:Play()
+	return s
 end
 
 -- Flat, positionless, for things with no place in the world: the
@@ -196,7 +220,138 @@ function BoardEffects.fadeIn(part, color, duration, alwaysOnTop)
 	return highlight
 end
 
+-- The mirror image: lands at full colour and fades off, then cleans
+-- itself up. Used for "that just happened to this orb" feedback — a
+-- bomb marking everything its blast caught — where fadeIn is for "this
+-- is about to happen to it".
+--
+-- Exponential-out by default, because a hit should read as an impact:
+-- almost all the colour is gone in the first fifth of the time and the
+-- rest is a tail. A Quad fade over the same 0.5s reads as a glow rather
+-- than a hit.
+function BoardEffects.fadeOut(part, color, duration, easingStyle)
+	local highlight = Instance.new("Highlight")
+	highlight.FillColor = color
+	highlight.FillTransparency = 0
+	highlight.OutlineTransparency = 1
+	highlight.DepthMode = Enum.HighlightDepthMode.Occluded
+	highlight.Parent = part
+
+	local tween = TweenService:Create(
+		highlight,
+		TweenInfo.new(
+			duration,
+			easingStyle or Enum.EasingStyle.Exponential,
+			Enum.EasingDirection.Out
+		),
+		{ FillTransparency = 1 }
+	)
+
+	-- Destroyed on completion rather than left at transparency 1: a
+	-- Highlight still costs something to render, and a busy board can
+	-- take several blasts before any of these would have been cleaned
+	-- up by the orb itself being sold.
+	tween.Completed:Connect(function()
+		if highlight.Parent then
+			highlight:Destroy()
+		end
+	end)
+	tween:Play()
+
+	return highlight
+end
+
 BoardEffects.SOUNDS = Config.SOUNDS
+
+-- ── screen shake ──────────────────────────────────────────────────────
+-- Nudges the camera around for a moment. Two details make this behave
+-- rather than fight everything else:
+--
+-- 1. It's bound at Camera + 1, so it runs AFTER the default camera
+--    module has set CFrame for the frame and multiplies its offset onto
+--    the result. Setting camera.CFrame from Heartbeat instead gets
+--    overwritten before anything is drawn, which is why naive screen
+--    shake in Roblox so often does nothing at all.
+-- 2. The offset comes from math.noise rather than math.random, so
+--    consecutive frames are related to each other. Per-frame random is
+--    a buzz; noise is a shake.
+--
+-- Overlapping calls don't stack — the strongest one wins and restarts
+-- the clock. Two bombs going off together should not be twice the
+-- earthquake, and a long weak shake shouldn't swallow a short sharp one.
+
+local shakeConnection
+local shakeAmplitude, shakeDuration, shakeElapsed, shakeSeed = 0, 0, 0, 0
+
+local SHAKE_BINDING = "BoardShake"
+
+-- math.noise is nominally [-1, 1] but in practice almost never leaves
+-- [-0.5, 0.5]. Without this the `amplitude` argument would mean about
+-- half what it looks like it means, and every caller would end up
+-- compensating with a number that reads wrong in the config.
+local SHAKE_NOISE_GAIN = 2
+
+local function stopShake()
+	if shakeConnection then
+		RunService:UnbindFromRenderStep(SHAKE_BINDING)
+		shakeConnection = false
+	end
+	shakeAmplitude = 0
+end
+
+function BoardEffects.shake(amplitude, duration, frequency, rotation)
+	if amplitude <= 0 or duration <= 0 then
+		return
+	end
+
+	-- A weaker shake arriving mid-shake is ignored outright; a stronger
+	-- one takes over.
+	local remaining = shakeAmplitude > 0
+		and shakeAmplitude * (1 - math.clamp(shakeElapsed / shakeDuration, 0, 1))
+		or 0
+	if amplitude <= remaining then
+		return
+	end
+
+	shakeAmplitude = amplitude
+	shakeDuration = duration
+	shakeElapsed = 0
+	shakeSeed = math.random() * 1000
+	frequency = frequency or 20
+	rotation = rotation or 0.8
+
+	if shakeConnection then
+		return -- already bound; the numbers above are all it needs
+	end
+	shakeConnection = true
+
+	RunService:BindToRenderStep(SHAKE_BINDING, Enum.RenderPriority.Camera.Value + 1, function(dt)
+		local camera = Workspace.CurrentCamera
+		if not camera or shakeAmplitude <= 0 then
+			stopShake()
+			return
+		end
+
+		shakeElapsed += dt
+		if shakeElapsed >= shakeDuration then
+			stopShake()
+			return
+		end
+
+		-- Quadratic decay: the shake is mostly over well before it
+		-- formally ends, which keeps the tail from reading as a rattle.
+		local remainingFraction = 1 - (shakeElapsed / shakeDuration)
+		local strength = shakeAmplitude * remainingFraction * remainingFraction
+
+		local t = shakeElapsed * frequency
+		local gain = strength * SHAKE_NOISE_GAIN
+		local x = math.noise(t, shakeSeed, 0) * gain
+		local y = math.noise(t, shakeSeed, 1) * gain
+		local roll = math.noise(t, shakeSeed, 2) * gain * rotation
+
+		camera.CFrame = camera.CFrame * CFrame.new(x, y, 0) * CFrame.Angles(0, 0, math.rad(roll))
+	end)
+end
 
 -- ── warm-up ───────────────────────────────────────────────────────────
 -- The first sell of a session used to flash nothing at all. The image
@@ -211,6 +366,12 @@ BoardEffects.SOUNDS = Config.SOUNDS
 -- thread.
 task.spawn(function()
 	local warm = { FLASH_IMAGE }
+	-- The bomb's flash is a different image from the sell flash, and it
+	-- has the same first-time problem: a blast lasts 0.1s, which is not
+	-- long enough to decode an image in.
+	if Config.BOMB and Config.BOMB.FLASH_IMAGE then
+		table.insert(warm, Config.BOMB.FLASH_IMAGE)
+	end
 	for _, sound in pairs(Config.SOUNDS) do
 		table.insert(warm, sound.id)
 	end

@@ -3,7 +3,7 @@
     Path: ReplicatedStorage → Icon → Elements
     Parent: Elements
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-22 14:24:26
+    Exported: 2026-09-22 15:18:19
 ]]
 return function(icon)
 

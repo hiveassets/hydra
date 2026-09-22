@@ -2,7 +2,7 @@
     BoardService (ModuleScript)
     Path: ServerScriptService
     Parent: ServerScriptService
-    Exported: 2026-09-22 14:24:25
+    Exported: 2026-09-22 15:18:19
 ]]
 --[[
 	BoardService (ModuleScript) — place in ServerScriptService
@@ -220,18 +220,44 @@ handlers[ToServer.FELL] = function(_player, board, id)
 	board:onFell(id)
 end
 
+-- Both sell paths answer a refusal rather than dropping it. The client
+-- hides a sold orb the instant it's clicked — that's what makes selling
+-- feel immediate — so a refusal it never hears about leaves the orb
+-- gone on screen and still on the ledger, where it counts as an orb the
+-- board already has and stops it restocking. See Board.reject.
+--
+-- Neither of these fires in normal play: SellClient checks the defuser
+-- and degausser itself before it ever sends, so the checks below are
+-- the anti-cheat backstop. Which is exactly why they have to repair
+-- rather than sit silent — the times they DO fire are a crafted client
+-- or a bug on our side, and both leave the same mess.
+
 handlers[ToServer.SELL] = function(player, board, id)
 	if player:GetAttribute("AFK") then
 		return
 	end
-	board:onSell(id, sellCheckFor(player))
+	local ok, reason = board:onSell(id, sellCheckFor(player))
+	if not ok then
+		board:reject(id, reason)
+	end
 end
 
 handlers[ToServer.SELL_BOX] = function(player, board, ids)
 	if player:GetAttribute("AFK") then
 		return
 	end
-	board:onSellBox(ids, sellCheckFor(player))
+	-- A box sell is one message for the whole selection and the client
+	-- has already hidden every orb in it, so a PARTIAL failure diverges
+	-- just as badly as a total one. `stranded` counts only the orbs the
+	-- ledger still holds — an orb it had already dropped is one both
+	-- sides agree is gone, not something to rebuild the board over.
+	local ok, reason, stranded = board:onSellBox(ids, sellCheckFor(player))
+	if (stranded or 0) > 0 then
+		board:reject(nil, ("%s — %d orb(s) hidden there but still here"):format(
+			ok and "part of that selection didn't sell" or tostring(reason),
+			stranded
+			))
+	end
 end
 
 handlers[ToServer.EXPIRED] = function(_player, board, id)

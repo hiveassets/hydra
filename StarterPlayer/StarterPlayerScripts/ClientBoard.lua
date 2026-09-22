@@ -2,7 +2,7 @@
     ClientBoard (ModuleScript)
     Path: StarterPlayer → StarterPlayerScripts
     Parent: StarterPlayerScripts
-    Exported: 2026-09-22 14:24:27
+    Exported: 2026-09-22 15:18:20
 ]]
 --[[
 	ClientBoard (ModuleScript) — place in StarterPlayerScripts
@@ -127,9 +127,9 @@ local function setDisplayText(part, size)
 end
 
 -- ── radiant ───────────────────────────────────────────────────────────
--- Phase 3 turns every behaviour into its own module under a Behaviours
--- folder; the radiant colour loop is small enough, and needed from
--- phase 1, that it lives here until then.
+-- The radiant colour cycle stays here rather than becoming a behaviour
+-- module. It isn't a kind — it's an overlay that can ride on any of
+-- them — and it's needed from phase 1, before the runner below exists.
 
 local RADIANT_COLORS = {
 	Color3.fromRGB(255, 0, 0),
@@ -349,19 +349,178 @@ function ClientBoard.reportTrickShot()
 	send(ToServer.TRICK_SHOT)
 end
 
+-- ── behaviours ────────────────────────────────────────────────────────
+-- A special's behaviour is a ModuleScript in ReplicatedStorage →
+-- Behaviours, named after the kind's template (Bomb, Magnet, ...), with
+-- a single `start(ctx)`. The runner spawns it when the orb launches and
+-- then leaves it alone: stopping is `ctx.alive()` going false, which
+-- every module polls around its own yields. That's the same shape the
+-- old fuse scripts had, except a fuse used to be a Script living inside
+-- the part, dying with it, and reaching BallManager through _G.
+--
+-- Nothing here knows what any particular special does. Adding one in a
+-- later step is a module plus a weight in SPECIAL_WEIGHTS, and no
+-- change to this file at all.
+
+local behaviourCache = {} -- [kind] = module, or false for "there isn't one"
+
+local function behaviourFor(kind)
+	local cached = behaviourCache[kind]
+	if cached ~= nil then
+		return cached or nil
+	end
+
+	local look = Config.LOOK[kind]
+	local name = look and look.template
+	local behaviours = name and Rep:FindFirstChild("Behaviours")
+	local module = behaviours and behaviours:FindFirstChild(name)
+
+	if not (module and module:IsA("ModuleScript")) then
+		-- Not an error: a kind with no module is one whose step hasn't
+		-- landed yet, and its weight should be 0 anyway.
+		behaviourCache[kind] = false
+		return nil
+	end
+
+	local ok, result = pcall(require, module)
+	if not ok or type(result) ~= "table" or type(result.start) ~= "function" then
+		warn(("[ClientBoard] behaviour module %s is unusable: %s"):format(
+			name,
+			ok and "it has no start(ctx)" or tostring(result)
+			))
+		behaviourCache[kind] = false
+		return nil
+	end
+
+	behaviourCache[kind] = result
+	return result
+end
+
+local function startBehaviour(entry)
+	local module = behaviourFor(entry.kind)
+	if not module then
+		return
+	end
+
+	local part = entry.part
+	local ctx = {
+		id = entry.id,
+		kind = entry.kind,
+		-- The LEDGER's size, never the part's. A module that read the
+		-- part would be reading a number the client could have changed;
+		-- this one came from the server.
+		size = entry.size,
+		radiant = entry.radiant,
+
+		part = part,
+		folder = folder,
+		ops = ToServer,
+		config = Config,
+		rules = Rules,
+		effects = BoardEffects,
+
+		-- The stop signal, polled rather than pushed. False the moment
+		-- the orb is sold, stashed, auto-sold, collapsed or removed by
+		-- the server: forget() clears the flag on every one of those
+		-- routes, so a module only ever has to ask.
+		alive = function()
+			return entry.behavioursAlive and part.Parent ~= nil
+		end,
+
+		report = function(...)
+			send(...)
+		end,
+
+		remove = function()
+			forget(entry)
+		end,
+
+		-- What kind another part on this board is, or nil if it isn't a
+		-- tracked orb at all. Behaviours need this to treat each other
+		-- differently — a blast flashes orbs but not splitters, and
+		-- step 5's mimic will care a great deal about what it's looking
+		-- at. Reads the board's own table rather than the part's Name,
+		-- which is only ever the template's and can be changed locally.
+		kindOf = function(other)
+			local otherEntry = byPart[other]
+			return otherEntry and otherEntry.kind or nil
+		end,
+	}
+
+	task.spawn(function()
+		local ok, err = pcall(module.start, ctx)
+		if not ok then
+			warn(("[ClientBoard] the %s behaviour errored on orb %d: %s")
+				:format(entry.kind, entry.id, tostring(err)))
+
+			-- A behaviour that died partway can't be trusted to have
+			-- reported its own removal, and an orb the server still
+			-- counts but this client has abandoned is exactly the
+			-- softlock shape from phase 2b. Hand it back as expired, the
+			-- way the module should have.
+			if entry.behavioursAlive then
+				send(ToServer.EXPIRED, entry.id)
+				forget(entry)
+			end
+		end
+	end)
+end
+
 -- ── spawning ──────────────────────────────────────────────────────────
+
+-- Which template a kind is cloned from. Cached per kind, and anything
+-- missing falls back to a plain orb with a warn rather than erroring
+-- the launch — a board that spawns the wrong-looking orb is worth far
+-- more than one that stops spawning.
+local templates = {}
+
+local function templateFor(kind)
+	local cached = templates[kind]
+	if cached then
+		return cached
+	end
+
+	local look = Config.LOOK[kind]
+	local name = look and look.template
+	local template = name and Rep:FindFirstChild(name)
+	if not (template and template:IsA("BasePart")) then
+		-- Loud, because the symptom is subtle: the orb still spawns, still
+		-- behaves correctly and still pays correctly — it just looks like
+		-- a plain ball, with the plain ball's reflectance, surfaces and
+		-- size readout instead of its own.
+		warn(("[ClientBoard] no BasePart named %s in ReplicatedStorage for kind '%s' — falling back to a plain orb, which will look wrong")
+			:format(tostring(name), tostring(kind)))
+		template = ballTemplate
+	end
+
+	templates[kind] = template
+	return template
+end
 
 local function launch(entry)
 	local size = entry.size
 	local visual = Rules.visualSize(size)
+	local look = Config.LOOK[entry.kind]
 
-	local part = ballTemplate:Clone()
+	-- Everything written below is something the BOARD owns: where the
+	-- orb is, how big it is, what it collides with, what it weighs, and
+	-- which ledger entry it is. Everything else — reflectance, material,
+	-- surface types, the billboard's own setup — is left exactly as the
+	-- template has it, which is what makes a bomb look like a bomb.
+	local part = templateFor(entry.kind):Clone()
 	part.Anchored = false
 	part.CollisionGroup = CG.Balls
 	part.CanCollide = false -- comes back at COL_Y, see the heartbeat
 	part.Size = Vector3.new(visual, visual, visual)
-	part.Color = entry.color
 	part.CFrame = CFrame.new(Config.SPAWN_POS)
+
+	-- Only for kinds that are meant to be a random colour. A bomb or a
+	-- magnet is recognised by its own colour scheme, and painting the
+	-- ledger's roll over it made a bomb spawn lilac for the frame before
+	-- its fuse took the colour back.
+	if not look or look.ledgerColor then
+		part.Color = entry.color
+	end
 
 	part:SetAttribute("BallId", entry.id)
 	part:SetAttribute("TargetSize", size)
@@ -369,7 +528,16 @@ local function launch(entry)
 		part:SetAttribute("IsRadiant", true)
 	end
 
-	setDisplayText(part, size)
+	-- Likewise the readout. A bomb's label is "!!" and a magnet's is
+	-- "><", baked into the template; writing the size over it at spawn
+	-- left the static label gone until sell mode happened to restore it.
+	-- The scale still applies to every kind — that's the billboard
+	-- tracking the orb's size, not the text.
+	if not look or look.showsSize then
+		setDisplayText(part, size)
+	else
+		setDisplayScale(part, part.Size.X)
+	end
 
 	-- Mass stays roughly linear in size rather than cubic, so a big ball
 	-- is heavy without being a wall (see BoardRules.densityFor).
@@ -393,6 +561,13 @@ local function launch(entry)
 
 	if entry.radiant then
 		startRadiantLoop(entry)
+	end
+
+	-- After the part is fully built and parented: a behaviour's first
+	-- act can be to recolour or move it, and it shouldn't race the setup
+	-- above.
+	if entry.kind ~= "ball" then
+		startBehaviour(entry)
 	end
 
 	-- The spawn cue comes from the map's fixed spawn symbol rather than
@@ -616,7 +791,23 @@ function ClientBoard.sellBox(parts)
 	local ids = {}
 	for _, part in ipairs(parts) do
 		local entry = byPart[part]
-		if entry and not entry.selling and not collapsing and not paused then
+		-- Same state check the single sell does, and for the same
+		-- reason: an orb already on its way off the edge was reported as
+		-- fallen the moment it crossed, and the server forgot it right
+		-- then. Selling it is a message about an orb that no longer
+		-- exists.
+		--
+		-- This was missing here, and a marquee doesn't care what's
+		-- falling — it selects by where things are on screen. On a busy
+		-- board a drag would routinely scoop up an orb mid-fall, which
+		-- is why a bulk sell so often ended in the whole board rebuilding
+		-- itself.
+		if entry
+			and not entry.selling
+			and not collapsing
+			and not paused
+			and (entry.state == "settled" or entry.state == "ascending")
+		then
 			entry.selling = true
 			table.insert(ids, entry.id)
 			forget(entry)

@@ -5,7 +5,7 @@
     Properties:
         Disabled: false
         RunContext: Enum.RunContext.Legacy
-    Exported: 2026-09-22 14:24:25
+    Exported: 2026-09-22 15:18:19
 ]]
 --[[
 	StashHandler (Script) — ServerScriptService
@@ -184,7 +184,9 @@ stashRequest.OnServerEvent:Connect(function(player, id)
 	-- Everything the board can't answer on its own. The board checks
 	-- that the orb exists, is live and isn't mid-anything; this checks
 	-- that it's a kind the stash handles at all.
-	local ok, snapshot = board:onStash(id, function(entry)
+	-- On success the second return is the ledger's snapshot of the orb;
+	-- on failure it's the reason it was refused.
+	local ok, snapshotOrReason = board:onStash(id, function(entry)
 		if not StashData.isKind(entry.kind) then
 			return false, "not stashable" -- mimics land here, by not being in StashData at all
 		end
@@ -195,9 +197,24 @@ stashRequest.OnServerEvent:Connect(function(player, id)
 	end)
 
 	if not ok then
+		-- Silent to the PLAYER, as every stash refusal is — no message,
+		-- no sound, a press that can't do anything just doesn't. But not
+		-- silent to their client: StashClient has already played the
+		-- pull and removed the orb, so a refusal it never hears about
+		-- leaves the orb gone on screen and still on the ledger, which
+		-- is what stops the board restocking. reject() asks it to
+		-- rebuild from the ledger, and the orb comes back.
+		--
+		-- StashClient checks its own free slots before animating, so in
+		-- normal play this doesn't fire. It's the backstop for the cases
+		-- only the server can know about — a kind that isn't stashable,
+		-- radiance that can't be given back — which is exactly where
+		-- step 5's mimics will land.
+		board:reject(id, snapshotOrReason)
 		return
 	end
 
+	local snapshot = snapshotOrReason
 	writeSlot(slot, snapshot.kind, snapshot.size, snapshot.color, snapshot.radiant)
 
 	-- The chat line stays server-side like every other one, and still

@@ -4,7 +4,7 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
-    Exported: 2026-09-22 14:24:28
+    Exported: 2026-09-22 15:18:21
 ]]
 --[[
 	RemotePlayersClient (LocalScript) — place in StarterPlayerScripts
