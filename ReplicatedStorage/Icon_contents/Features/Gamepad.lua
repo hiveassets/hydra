@@ -3,7 +3,7 @@
     Path: ReplicatedStorage → Icon → Features
     Parent: Features
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-22 15:18:20
+    Exported: 2026-09-22 18:28:57
 ]]
 -- As the name suggests, this handles everything related to gamepads
 -- (i.e. Xbox or Playstation controllers) and their navigation

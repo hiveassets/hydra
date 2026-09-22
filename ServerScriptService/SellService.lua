@@ -2,7 +2,7 @@
     SellService (ModuleScript)
     Path: ServerScriptService
     Parent: ServerScriptService
-    Exported: 2026-09-22 15:18:19
+    Exported: 2026-09-22 18:28:56
 ]]
 --[[
 	SellService (ModuleScript) — ServerScriptService, sibling of Board
@@ -241,8 +241,8 @@ end
 function SellService.autoSellLine(player, amount, radiant)
 	return string.format(
 		radiant
-			and "%s's board hit the orb cap — their smallest orb was <b>radiant</b> and auto-sold for %s"
-			or "%s's board hit the orb cap — their smallest orb auto-sold for %s",
+			and "%s's board hit the max orbs !!!! their smallest orb was <b>radiant</b> and auto-sold for %s"
+			or "%s's board hit the max orbs !!!! their smallest orb auto-sold for %s",
 		who(player),
 		SellService.money(amount, "auto")
 	)
@@ -287,11 +287,11 @@ local COLLAPSE_QUIPS = {
 	"i kow it sucks but last time we let the queue pile up someone made trillions ...",
 	"don't worry, ur not the first and wont be the last",
 	"id listen to the little voice in the queue counter if i were u",
-	"you can press T to cycle through counters at the top if that helps",
+	"you can press ALT to cycle through counters at the top if that helps",
 	"consider buying the defuser to prevent bombs from detonating",
 	"consider buying the defuser to prevent magnets from activating",
-	"consider buying the ... nevermind u just cant sell splitter orbs",
-	"consider buying the ... nevermind u just cant sell merger orbs",
+	"consider buying the ... nevermind u cant sell splitter orbs",
+	"consider buying the ... nevermind u cant sell merger orbs",
 	"assuming this is your first collapse,, enjoy your new badge !! (dont do that again)",
 	"i do accept bribes if u want me to go away for a bit (shhhhhh)",
 	"radiant orbs pay out triple if that makes selling more appealing ?",

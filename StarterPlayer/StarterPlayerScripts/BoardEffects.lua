@@ -2,7 +2,7 @@
     BoardEffects (ModuleScript)
     Path: StarterPlayer → StarterPlayerScripts
     Parent: StarterPlayerScripts
-    Exported: 2026-09-22 15:18:20
+    Exported: 2026-09-22 18:28:58
 ]]
 --[[
 	BoardEffects (ModuleScript) — place in StarterPlayerScripts

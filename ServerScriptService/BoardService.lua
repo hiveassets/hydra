@@ -2,7 +2,7 @@
     BoardService (ModuleScript)
     Path: ServerScriptService
     Parent: ServerScriptService
-    Exported: 2026-09-22 15:18:19
+    Exported: 2026-09-22 18:28:56
 ]]
 --[[
 	BoardService (ModuleScript) — place in ServerScriptService

@@ -2,7 +2,7 @@
     BoardConfig (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
-    Exported: 2026-09-22 15:18:20
+    Exported: 2026-09-22 18:28:58
 ]]
 --[[
 	BoardConfig (ModuleScript) — place directly in ReplicatedStorage
@@ -98,6 +98,30 @@ BoardConfig.VOID_FALLBACK_TIMEOUT = 5
 -- against the orb cap.
 BoardConfig.VOID_Y = -120
 
+-- ...and this is where it's actually destroyed, which is a separate
+-- question from where the fall gets REPORTED above.
+--
+-- They used to be the same line, and an orb simply blinked out of
+-- existence on crossing it. The platform sits at the origin with a clear
+-- view straight down past the edge, so what you saw was an orb vanishing
+-- in mid-air for no reason. Splitting the two lets the report stay where
+-- it was — replacements arrive on exactly the same beat as before — while
+-- the orb itself carries on down well out of sight before it goes.
+--
+-- Worth knowing if you retune this: Workspace.FallenPartsDestroyHeight
+-- (-500 by default) will destroy the part out from under the shrink if
+-- this gets close to it. At -250 the orb is doing about 310 studs a
+-- second, so the exit finishes around -353 — comfortable margin, and if
+-- it ever isn't, the orb simply goes without the animation rather than
+-- anything breaking.
+BoardConfig.VOID_EXIT_Y = -50
+
+-- How long the orb takes to shrink away once it crosses that line.
+-- There's no highlight and no flash with it: a fall isn't an event, it's
+-- an orb leaving, and anything more than the shrink made it look like
+-- something had happened.
+BoardConfig.VOID_EXIT_TIME = 1
+
 -- ── special rolls (dormant until phase 3) ─────────────────────────────
 BoardConfig.SPECIAL_TOTAL_CHANCE = 0.15 -- share of cleared rolls that become some special
 BoardConfig.SPECIAL_COOLDOWN = 10       -- seconds between special rolls, shared across every kind
@@ -110,7 +134,7 @@ BoardConfig.SPECIAL_MIN_BALLS = 2       -- board must already have this many bal
 -- goes back to — don't re-derive them, they're the originals.
 --
 --   bomb      5      ← step 1, live
---   magnet    3      ← step 2
+--   magnet    3      ← step 2, live
 --   splitter  2      ← step 3
 --   merger    1      ← step 4
 --   mimic     0.05   ← step 5
@@ -120,7 +144,7 @@ BoardConfig.SPECIAL_MIN_BALLS = 2       -- board must already have this many bal
 -- BoardRules.radiantSupported.
 BoardConfig.SPECIAL_WEIGHTS = {
 	bomb = 5,
-	magnet = 0,
+	magnet = 3,
 	mimic = 0,
 	splitter = 0,
 	merger = 0,
@@ -155,13 +179,20 @@ BoardConfig.SPECIAL_WEIGHTS = {
 -- The server never touches any of this; it only ever deals in the kind
 -- NAME. A client that swapped a template changes what its own orb looks
 -- like, not what the ledger says it is or what it pays.
+--   selfDriven   true if the behaviour owns where this orb is. The board
+--                skips the whole launch-and-settle path for it: no
+--                launch velocity, stays anchored, and the per-frame ball
+--                physics never touches it. A magnet rises, wanders and
+--                then holds position under its own control, and would be
+--                fought the whole way by a step loop trying to settle it
+--                onto the platform and switch its collision back on.
 BoardConfig.LOOK = {
-	ball     = { template = "Ball",     ledgerColor = true,  showsSize = true },
-	bomb     = { template = "Bomb",     ledgerColor = false, showsSize = false },
-	magnet   = { template = "Magnet",   ledgerColor = false, showsSize = false },
-	mimic    = { template = "Mimic",    ledgerColor = true,  showsSize = true },
-	splitter = { template = "Splitter", ledgerColor = false, showsSize = false },
-	merger   = { template = "Merger",   ledgerColor = false, showsSize = false },
+	ball     = { template = "Ball",     ledgerColor = true,  showsSize = true,  selfDriven = false },
+	bomb     = { template = "Bomb",     ledgerColor = false, showsSize = false, selfDriven = false },
+	magnet   = { template = "Magnet",   ledgerColor = false, showsSize = false, selfDriven = true },
+	mimic    = { template = "Mimic",    ledgerColor = true,  showsSize = true,  selfDriven = false },
+	splitter = { template = "Splitter", ledgerColor = false, showsSize = false, selfDriven = false },
+	merger   = { template = "Merger",   ledgerColor = false, showsSize = false, selfDriven = false },
 }
 
 -- ── bomb ──────────────────────────────────────────────────────────────
@@ -252,6 +283,71 @@ BoardConfig.BOMB = {
 	SHAKE_TIME = 0.45,
 	SHAKE_FREQUENCY = 20, -- noise cycles a second: higher is a rattle, lower is a heave
 	SHAKE_ROTATION = 0.8, -- degrees of camera roll per stud of offset
+}
+
+-- ── magnet ────────────────────────────────────────────────────────────
+-- Every number lifted from MagnetFuse unchanged. The magnet rises,
+-- wanders to a random point, telegraphs, then pulls every plain orb
+-- toward itself while shrinking away to nothing.
+BoardConfig.MAGNET = {
+	-- Rise height and wander radius both scale off a size-10 magnet, so
+	-- that one still rises to exactly 25 and wanders out to exactly 65 —
+	-- the flat values these replaced — and every other size moves
+	-- linearly off that anchor.
+	SIZE_REF = 10,
+	RISE_Y_BASE = 25,
+	RISE_Y_PER_SIZE = 0.5,
+	WANDER_RADIUS_BASE = 65,
+	WANDER_RADIUS_PER_SIZE = 2,
+
+	RISE_TIME = 2,
+	RISE_STYLE = Enum.EasingStyle.Exponential,
+	WANDER_TIME = 3,
+	WANDER_STYLE = Enum.EasingStyle.Sine,
+	-- The rise starts at once, the sideways move waits. An Out ease puts
+	-- the magnet well clear of the floor almost immediately, and starting
+	-- the wander any sooner shows it sliding along underground.
+	WANDER_START_DELAY = 0.1,
+
+	-- Idle colour: pure red to pure blue and back, the whole time it's
+	-- visible, so it reads as live from the moment it appears.
+	COLOR_A = Color3.new(1, 0, 0),
+	COLOR_B = Color3.new(0, 0, 1),
+	COLOR_CYCLE_TIME = 0.5, -- one leg; it reverses, so a full cycle is twice this
+
+	-- The warning sphere: the inverse of the bomb's fireball. Starts big
+	-- and invisible, shrinks onto the magnet while fading IN. Timed to
+	-- finish exactly as the magnet arrives, because it's the only warning
+	-- there is and nothing dangerous may happen until it has played out.
+	TELEGRAPH_COLOR = Color3.fromRGB(255, 255, 0),
+	TELEGRAPH_RADIUS_PER_SIZE = 3,
+	TELEGRAPH_TIME = 2,
+
+	-- The pull. SHRINK_TIME is how long the magnet takes to go from its
+	-- arrival size to nothing, the same for every size — a bigger magnet
+	-- loses more studs a second rather than lasting longer.
+	SHRINK_TIME = 2,
+	PULL_ACCEL = 10, -- per stud of the magnet's CURRENT size, per second, with no distance falloff
+
+	-- The shine that replaces the magnet once it turns invisible. Its
+	-- size is three curves multiplied together: a one-shot pop in, a
+	-- permanent oscillation, and a final ease to nothing timed to land on
+	-- zero the same frame the magnet goes.
+	SHINE_SCALE = 1, -- multiple of the ARRIVAL size, not a flat stud count
+	SHINE_OSC_MIN = 0.9,
+	SHINE_OSC_MAX = 1.1,
+	SHINE_OSC_HZ = 8,
+	SHINE_ENTRANCE_START = 3,
+	SHINE_ENTRANCE_TIME = 0.5,
+	SHINE_ENTRANCE_STYLE = Enum.EasingStyle.Quad,
+	SHINE_EXIT_TIME = 0.5,
+	SHINE_EXIT_STYLE = Enum.EasingStyle.Quad,
+	SHINE_WHITE_TIME = 0.03, -- pops white this long...
+	SHINE_POP_DELAY = 0.1,   -- ...then yellow until here, then the flicker takes over
+	SHINE_FLICKER_HZ = 4,    -- snaps between COLOR_A and COLOR_B this often, no fade
+	SHINE_YELLOW = Color3.new(1, 1, 0),
+	SHINE_WHITE = Color3.new(1, 1, 1),
+	FLASH_IMAGE = "rbxassetid://131187911056182", -- the bomb's flash image, reused
 }
 
 -- ── radiant ───────────────────────────────────────────────────────────
@@ -421,6 +517,15 @@ BoardConfig.SOUNDS = {
 	-- board now, so they're just sounds.
 	bombFlicker = { id = "rbxassetid://12221976", volume = 1 },
 	bombBoom = { id = "rbxassetid://12222084", volume = 1 },
+
+	-- The magnet. The spawn cue used to go out as a "positional" event
+	-- rather than an "attached" one, specifically because the magnet
+	-- instance might not have replicated to a given client yet at the
+	-- moment it fired — an Instance argument that hasn't arrived reads as
+	-- nil there and the sound was silently dropped. Nothing replicates
+	-- now, so that whole hazard is gone.
+	magnetSpawn = { id = "rbxassetid://12221842", volume = 0.2, speed = 4 },
+	magnetPull = { id = "rbxassetid://12222095", volume = 0.7, speed = 3 },
 }
 
 -- ── collapse visuals (client-side, but shared so one file owns tuning) ─

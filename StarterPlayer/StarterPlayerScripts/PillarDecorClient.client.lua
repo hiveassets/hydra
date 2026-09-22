@@ -4,7 +4,7 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
-    Exported: 2026-09-22 15:18:21
+    Exported: 2026-09-22 18:28:58
 ]]
 --[[
 	PillarDecorClient (LocalScript) — place in StarterPlayerScripts

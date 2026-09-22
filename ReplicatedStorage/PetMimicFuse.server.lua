@@ -5,7 +5,7 @@
     Properties:
         Disabled: false
         RunContext: Enum.RunContext.Legacy
-    Exported: 2026-09-22 15:18:19
+    Exported: 2026-09-22 18:28:56
 ]]
 --[[
 	PetMimicFuse (Script) — place directly in ReplicatedStorage

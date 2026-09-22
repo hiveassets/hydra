@@ -3,7 +3,7 @@
     Path: StarterPlayer → StarterPlayerScripts → PlayerModule → CameraModule
     Parent: CameraModule
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-22 15:18:21
+    Exported: 2026-09-22 18:28:58
 ]]
 -- Zoom
 -- Controls the distance between the focus and the camera.

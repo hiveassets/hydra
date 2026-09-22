@@ -2,7 +2,7 @@
     ClientBoard (ModuleScript)
     Path: StarterPlayer → StarterPlayerScripts
     Parent: StarterPlayerScripts
-    Exported: 2026-09-22 15:18:20
+    Exported: 2026-09-22 18:28:58
 ]]
 --[[
 	ClientBoard (ModuleScript) — place in StarterPlayerScripts
@@ -167,8 +167,38 @@ local function syncQueueCount()
 	folder:SetAttribute("QueueCount", #waiting)
 end
 
-local function forget(entry)
+-- ── stopping a behaviour ──────────────────────────────────────────────
+-- Behaviours are polled rather than notified: a module checks ctx.alive()
+-- around its own yields and returns once it goes false. That's enough for
+-- the module's own loops, and not enough for anything it started that
+-- runs on its own — a TweenService tween, a part it parented somewhere.
+-- Those keep going after the module has stopped caring.
+--
+-- ctx.onStop registers them and this runs them. Every route an orb can
+-- leave by ends up here, so a module's cleanup happens whether it was
+-- sold, stashed, auto-sold, collapsed, fell out of the world, or was
+-- removed by the server.
+local function stopBehaviours(entry)
 	entry.behavioursAlive = false
+
+	local cleanups = entry.behaviourCleanups
+	if not cleanups then
+		return
+	end
+	entry.behaviourCleanups = nil
+
+	for _, cleanup in ipairs(cleanups) do
+		-- One bad cleanup shouldn't stop the others, and certainly
+		-- shouldn't take down whatever was removing the orb.
+		local ok, err = pcall(cleanup)
+		if not ok then
+			warn(("[ClientBoard] a %s cleanup errored: %s"):format(tostring(entry.kind), tostring(err)))
+		end
+	end
+end
+
+local function forget(entry)
+	stopBehaviours(entry)
 	entries[entry.id] = nil
 	if entry.part then
 		byPart[entry.part] = nil
@@ -282,12 +312,27 @@ function ClientBoard.stashAbsorb(part)
 	if not entry or entry.selling or entry.stashing or collapsing or paused then
 		return nil
 	end
-	if entry.state ~= "settled" and entry.state ~= "ascending" then
+	-- Self-driven orbs are exempt from the state check, the same way they
+	-- are for selling. A magnet is never "settled" — it's off rising and
+	-- wandering under its own control — and requiring that state here is
+	-- what made magnets unstashable. What actually closes the window is
+	-- its Pulling attribute, which StashClient checks: you can pocket a
+	-- magnet right up until it becomes a live hazard, exactly as you can
+	-- sell one.
+	if not entry.selfDriven and entry.state ~= "settled" and entry.state ~= "ascending" then
 		return nil
 	end
 
 	entry.stashing = true
-	entry.behavioursAlive = false -- a radiant orb stops cycling, so the highlight isn't fighting it
+
+	-- Stops the behaviour AND tears down what it left running. That
+	-- second part matters far more here than anywhere else: this
+	-- animation lerps the part's Size and CFrame for 0.15s, and a magnet
+	-- caught early is still inside its own 0.6s grow tween — two things
+	-- writing Size every frame, with the grow winning. The telegraph
+	-- sphere is the same story in reverse: it's a separate part, so
+	-- moving the magnet leaves it hanging in mid-air.
+	stopBehaviours(entry)
 
 	local id = entry.id
 	local size = entry.size
@@ -435,6 +480,27 @@ local function startBehaviour(entry)
 			forget(entry)
 		end,
 
+		-- Register something to tear down whenever this behaviour stops,
+		-- by whatever route. A module's own loops only need alive(), but
+		-- anything it hands to something else to run — a TweenService
+		-- tween, a part parented outside its own control flow — outlives
+		-- it and needs this.
+		onStop = function(cleanup)
+			if not entry.behavioursAlive then
+				-- Already stopped, so nothing is coming back to run it.
+				-- Spawned rather than called inline so a module
+				-- registering during its own teardown can't recurse.
+				task.spawn(cleanup)
+				return
+			end
+			local list = entry.behaviourCleanups
+			if not list then
+				list = {}
+				entry.behaviourCleanups = list
+			end
+			table.insert(list, cleanup)
+		end,
+
 		-- What kind another part on this board is, or nil if it isn't a
 		-- tracked orb at all. Behaviours need this to treat each other
 		-- differently — a blast flashes orbs but not splitters, and
@@ -507,8 +573,15 @@ local function launch(entry)
 	-- which ledger entry it is. Everything else — reflectance, material,
 	-- surface types, the billboard's own setup — is left exactly as the
 	-- template has it, which is what makes a bomb look like a bomb.
+	-- A self-driven kind is placed and then left entirely to its
+	-- behaviour: anchored, no launch velocity, and skipped by the step
+	-- loop. A magnet rises and wanders under its own control, and the
+	-- ordinary path would spend the whole time trying to settle it onto
+	-- the platform and switch its collision back on underneath it.
+	local selfDriven = (look and look.selfDriven) == true
+
 	local part = templateFor(entry.kind):Clone()
-	part.Anchored = false
+	part.Anchored = selfDriven
 	part.CollisionGroup = CG.Balls
 	part.CanCollide = false -- comes back at COL_Y, see the heartbeat
 	part.Size = Vector3.new(visual, visual, visual)
@@ -551,10 +624,17 @@ local function launch(entry)
 	)
 
 	part.Parent = folder
-	part.AssemblyLinearVelocity = Rules.launchVelocity(size, Workspace.Gravity, rand, baseSize)
+	if not selfDriven then
+		part.AssemblyLinearVelocity = Rules.launchVelocity(size, Workspace.Gravity, rand, baseSize)
+	end
 
 	entry.part = part
-	entry.state = "ascending"
+	entry.selfDriven = selfDriven
+	-- "driven" is its own state rather than a lie about being settled, so
+	-- anything that tests the state gets an honest answer. Selling knows
+	-- about it; grabbing deliberately doesn't, which is what keeps a
+	-- magnet from being picked up mid-flight.
+	entry.state = selfDriven and "driven" or "ascending"
 	entry.grown = false
 	entry.behavioursAlive = true
 	byPart[part] = entry
@@ -686,11 +766,65 @@ local function reportFall(entry)
 	end)
 end
 
+-- ── falling out of the world ──────────────────────────────────────────
+-- The send-off for an orb that went over the edge. It used to simply
+-- blink out the moment it crossed the void line, which with a clear view
+-- straight down past the platform read as an orb vanishing in mid-air.
+--
+-- It shrinks away to nothing and goes. That's the whole thing.
+--
+-- It took two passes to get here. A flash barely registered, which makes
+-- sense — a flash is a fixed-size billboard seen from a few hundred
+-- studs away. A magenta highlight over the shrink read as an event, and
+-- a fall isn't one: nobody was paid and nothing was taken, an orb just
+-- left. The shrink alone says that, and it's the orb itself doing it,
+-- so distance scales it the way distance scales everything else.
+--
+-- No sound, for the same reason. A busy board sends a couple of orbs
+-- over the edge a second and each is hundreds of studs away by now.
+local function voidExit(entry)
+	-- The orb is still falling through this, so the step loop keeps
+	-- reaching it frame after frame. Only the first one counts.
+	if entry.voiding then
+		return
+	end
+
+	local part = entry.part
+	if not part or not part.Parent then
+		forget(entry)
+		return
+	end
+
+	entry.voiding = true
+	stopBehaviours(entry)
+
+	-- Quad IN, so the orb holds its size for most of it and then
+	-- collapses at the end. Easing out instead would dump most of the
+	-- size in the first few frames and leave a speck hanging there for
+	-- the rest, which reads as a stutter rather than a disappearance.
+	TweenService:Create(
+		part,
+		TweenInfo.new(Config.VOID_EXIT_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+		{ Size = Vector3.new(0, 0, 0) }
+	):Play()
+
+	task.delay(Config.VOID_EXIT_TIME, forget, entry)
+end
+
 local function stepBall(entry)
 	local part = entry.part
 	if not part or not part.Parent or paused then
 		return
 	end
+
+	-- Its behaviour owns where it is, including whether it's allowed to
+	-- fall. Everything below assumes an orb thrown up onto the platform,
+	-- and none of it is true for a magnet holding station in mid-air.
+	if entry.selfDriven then
+		return
+	end
+
+	local y = part.Position.Y
 
 	-- The catch-all, checked in every state. The state machine below
 	-- only notices a SETTLED ball dropping through the platform, which
@@ -699,15 +833,21 @@ local function stepBall(entry)
 	-- so never replaced, while the ledger went on counting it against
 	-- the orb cap. That's a board that quietly thins out and then stops
 	-- refilling.
-	if part.Position.Y < Config.VOID_Y then
+	--
+	-- Reporting only. It used to destroy the orb on the same line, which
+	-- is why a fall ended in a part blinking out of existence partway
+	-- down; the orb now keeps falling from here and gets its send-off
+	-- further down, out of sight.
+	if y < Config.VOID_Y then
 		reportFall(entry)
-		forget(entry)
+	end
+
+	if y < Config.VOID_EXIT_Y then
+		voidExit(entry)
 		return
 	end
 
 	if entry.state == "ascending" then
-		local y = part.Position.Y
-
 		-- Grow-in starts on height, independently of when collision
 		-- comes back.
 		if not entry.grown and y > Config.GROW_Y then
@@ -773,10 +913,14 @@ function ClientBoard.sell(part)
 	if not entry or entry.selling or collapsing or paused then
 		return false
 	end
-	if entry.state ~= "settled" and entry.state ~= "ascending" then
+	if not entry.selfDriven and entry.state ~= "settled" and entry.state ~= "ascending" then
 		-- already on its way off the edge: the server forgot it the
 		-- moment the fall was reported, so selling it would be a message
 		-- about a ball that no longer exists
+		--
+		-- A self-driven orb is exempt: a magnet is sellable through the
+		-- degausser for its whole rise and wander, and what closes that
+		-- window is its own Pulling attribute, which SellClient checks.
 		return false
 	end
 	entry.selling = true
@@ -829,7 +973,7 @@ local function autoSellVisual(entry)
 		return
 	end
 
-	entry.behavioursAlive = false
+	stopBehaviours(entry)
 	local position = part.Position
 	local size = entry.size
 
@@ -926,7 +1070,7 @@ local function freezeBoard()
 	syncQueueCount()
 
 	for _, entry in pairs(entries) do
-		entry.behavioursAlive = false
+		stopBehaviours(entry)
 		local part = entry.part
 		if part and part.Parent then
 			part.Anchored = true

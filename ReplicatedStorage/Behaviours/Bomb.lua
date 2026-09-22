@@ -2,7 +2,7 @@
     Bomb (ModuleScript)
     Path: ReplicatedStorage → Behaviours
     Parent: Behaviours
-    Exported: 2026-09-22 15:18:20
+    Exported: 2026-09-22 18:28:57
 ]]
 --[[
 	Bomb (ModuleScript) — place in ReplicatedStorage → Behaviours
