@@ -2,7 +2,7 @@
     BoardEffects (ModuleScript)
     Path: StarterPlayer → StarterPlayerScripts
     Parent: StarterPlayerScripts
-    Exported: 2026-09-20 22:14:29
+    Exported: 2026-09-22 13:33:38
 ]]
 --[[
 	BoardEffects (ModuleScript) — place in StarterPlayerScripts
@@ -31,6 +31,7 @@
 
 local TweenService = game:GetService("TweenService")
 local SoundService = game:GetService("SoundService")
+local ContentProvider = game:GetService("ContentProvider")
 local Workspace = game:GetService("Workspace")
 
 local Rep = game:GetService("ReplicatedStorage")
@@ -196,5 +197,26 @@ function BoardEffects.fadeIn(part, color, duration, alwaysOnTop)
 end
 
 BoardEffects.SOUNDS = Config.SOUNDS
+
+-- ── warm-up ───────────────────────────────────────────────────────────
+-- The first sell of a session used to flash nothing at all. The image
+-- hasn't been decoded yet at that point, and a flash only exists for
+-- 0.4s — by the time it's ready there's nothing left to draw it on.
+-- Every later flash looked right because the first one had paid for it.
+--
+-- SoundClient preloads this same image for the bomb, but it does it
+-- behind a list of thirty-odd sounds, so whether it's ready in time is
+-- a race against how fast the player gets to their first sale. This
+-- asks for the handful the board itself needs, first, on its own
+-- thread.
+task.spawn(function()
+	local warm = { FLASH_IMAGE }
+	for _, sound in pairs(Config.SOUNDS) do
+		table.insert(warm, sound.id)
+	end
+	pcall(function()
+		ContentProvider:PreloadAsync(warm)
+	end)
+end)
 
 return BoardEffects

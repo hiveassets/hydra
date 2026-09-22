@@ -5,7 +5,7 @@
     Properties:
         Disabled: false
         RunContext: Enum.RunContext.Legacy
-    Exported: 2026-09-20 22:14:29
+    Exported: 2026-09-22 13:33:36
 ]]
 --[[
 	AFKHandler (Script) — ServerScriptService, sibling of SellHandler
@@ -69,6 +69,14 @@ local Players = game:GetService("Players")
 local RS = game:GetService("RunService")
 local WS = game:GetService("Workspace")
 local Rep = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+-- AFK stops your board now: nothing launches, nothing falls, nothing
+-- spawns, and the launch queue's clock is held still so you come back
+-- to the board you left rather than to fifty orbs arriving at once.
+-- The collision group below still changes too — it costs nothing and
+-- covers the moment between the toggle and the freeze.
+local BoardService = require(ServerScriptService:WaitForChild("BoardService"))
 
 -- Every collision group, and every pairing between them, is declared in
 -- ReplicatedStorage.CollisionGroups — including AFKPlayers' own "passes
@@ -206,6 +214,7 @@ end)
 afkToggle.OnServerEvent:Connect(function(player)
 	local afk = not player:GetAttribute("AFK")
 	player:SetAttribute("AFK", afk)
+	BoardService.setPaused(player, afk)
 
 	-- os.time() rather than os.clock(): os.clock() is process uptime,
 	-- not wall time, and attributes are plain values with no epoch

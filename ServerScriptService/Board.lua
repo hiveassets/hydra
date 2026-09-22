@@ -1,4 +1,10 @@
 --[[
+    Board (ModuleScript)
+    Path: ServerScriptService
+    Parent: ServerScriptService
+    Exported: 2026-09-22 13:33:36
+]]
+--[[
 	Board (ModuleScript) — place in ServerScriptService
 	(ServerScriptService.Board), alongside BoardService, SellService and
 	the rest of the server scripts.

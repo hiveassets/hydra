@@ -2,7 +2,7 @@
     BoardService (ModuleScript)
     Path: ServerScriptService
     Parent: ServerScriptService
-    Exported: 2026-09-20 22:14:29
+    Exported: 2026-09-22 13:33:36
 ]]
 --[[
 	BoardService (ModuleScript) — place in ServerScriptService
@@ -138,6 +138,15 @@ function BoardService.forEach(fn)
 	end
 end
 
+-- Stops or restarts one player's board. AFKHandler calls this; a
+-- deliberate pause button would call exactly the same thing.
+function BoardService.setPaused(player, paused)
+	local board = boards[player]
+	if board then
+		board:setPaused(paused)
+	end
+end
+
 local function addPlayer(player)
 	if boards[player] then
 		return
@@ -201,6 +210,35 @@ end
 
 handlers[ToServer.EXPIRED] = function(_player, board, id)
 	board:onExpired(id)
+end
+
+handlers[ToServer.HOLD] = function(_player, board, id)
+	board:onHold(id)
+end
+
+handlers[ToServer.RELEASE] = function(_player, board, id)
+	board:onRelease(id)
+end
+
+-- The client watched the throw, because it owns the physics. The server
+-- checks the half it can still see: that the thrower was standing on the
+-- pad in the middle of the platform. It's a badge, so this is a
+-- plausibility check rather than a proof — and the thrower has had a
+-- second or two to wander, hence the slack.
+handlers[ToServer.TRICK_SHOT] = function(player, _board)
+	local character = player.Character
+	local hrp = character and character:FindFirstChild("HumanoidRootPart")
+	if not hrp then
+		return
+	end
+
+	local position = hrp.Position
+	local fromCentre = Vector2.new(position.X, position.Z).Magnitude
+	if fromCentre > Config.TRICK_ZONE_RADIUS + Config.TRICK_ZONE_SERVER_SLACK then
+		return
+	end
+
+	SellService.badge(player, Config.BADGES.trickShot)
 end
 
 toServer.OnServerEvent:Connect(function(player, op, ...)

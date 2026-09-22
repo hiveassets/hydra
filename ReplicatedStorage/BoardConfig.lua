@@ -1,4 +1,10 @@
 --[[
+    BoardConfig (ModuleScript)
+    Path: ReplicatedStorage
+    Parent: ReplicatedStorage
+    Exported: 2026-09-22 13:33:38
+]]
+--[[
 	BoardConfig (ModuleScript) — place directly in ReplicatedStorage
 	(ReplicatedStorage.BoardConfig).
 

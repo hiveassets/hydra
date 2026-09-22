@@ -1,4 +1,12 @@
 --[[
+    CollapseEffectsClient (LocalScript)
+    Path: StarterPlayer → StarterPlayerScripts
+    Parent: StarterPlayerScripts
+    Properties:
+        Disabled: false
+    Exported: 2026-09-22 13:33:38
+]]
+--[[
 	CollapseEffectsClient (LocalScript) — StarterPlayerScripts
 
 	Everything you see during a collapse that isn't a ball: the colour

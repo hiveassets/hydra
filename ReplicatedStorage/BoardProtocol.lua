@@ -2,7 +2,7 @@
     BoardProtocol (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
-    Exported: 2026-09-20 22:14:29
+    Exported: 2026-09-22 13:33:38
 ]]
 --[[
 	BoardProtocol (ModuleScript) — place directly in ReplicatedStorage
@@ -62,6 +62,16 @@ BoardProtocol.ToServer = {
 	-- () the client finished starting up and wants the board it should
 	-- already have (a respawn, a rejoin, a script restart in Studio)
 	READY = "ready",
+	-- (id) this ball is in the player's hands. The only thing the server
+	-- does with it is stop the orb cap auto-selling a ball out of
+	-- someone's grip — grabbing needs no permission, since a carried
+	-- ball is worth exactly what it was worth on the ground.
+	HOLD = "hold",
+	-- (id) ...and it isn't any more, thrown or dropped.
+	RELEASE = "release",
+	-- () the player threw a ball from the middle pad and it cleared the
+	-- platform without touching anything. Worth a badge, nothing else.
+	TRICK_SHOT = "trickShot",
 }
 
 -- ── server to client ──────────────────────────────────────────────────
@@ -84,6 +94,17 @@ BoardProtocol.ToClient = {
 	-- puts the ball back the way the server thinks it is. Should be
 	-- rare enough to warn about.
 	REJECT = "reject",
+	-- (paused) the board stops: nothing launches, nothing falls,
+	-- nothing spawns, and every ball freezes where it is. AFK is what
+	-- fires this today (see AFKHandler), and it's also the shape a
+	-- deliberate pause would take, which a single-player game can
+	-- afford to have.
+	--
+	-- Both sides hold the launch queue's clock still for the duration
+	-- and shift every pending stamp forward by however long the pause
+	-- lasted, so a ball that was two seconds from launching is still
+	-- two seconds from launching when you come back.
+	PAUSE = "pause",
 }
 
 BoardProtocol.Collapse = {

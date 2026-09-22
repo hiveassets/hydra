@@ -1,4 +1,10 @@
 --[[
+    ClientBoard (ModuleScript)
+    Path: StarterPlayer → StarterPlayerScripts
+    Parent: StarterPlayerScripts
+    Exported: 2026-09-22 13:33:38
+]]
+--[[
 	ClientBoard (ModuleScript) — place in StarterPlayerScripts
 	(StarterPlayer.StarterPlayerScripts.ClientBoard). Started by
 	BoardClient, and required directly by SellClient, MusicClient,

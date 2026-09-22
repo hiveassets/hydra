@@ -4,7 +4,7 @@
     Parent: StarterCharacterScripts
     Properties:
         Disabled: false
-    Exported: 2026-09-20 22:14:30
+    Exported: 2026-09-22 13:33:39
 ]]
 local t=game:GetService("TweenService")
 local u=game:GetService("UserInputService")
