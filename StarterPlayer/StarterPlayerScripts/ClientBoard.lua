@@ -1,10 +1,4 @@
 --[[
-    ClientBoard (ModuleScript)
-    Path: StarterPlayer → StarterPlayerScripts
-    Parent: StarterPlayerScripts
-    Exported: 2026-09-20 22:14:29
-]]
---[[
 	ClientBoard (ModuleScript) — place in StarterPlayerScripts
 	(StarterPlayer.StarterPlayerScripts.ClientBoard). Started by
 	BoardClient, and required directly by SellClient, MusicClient,
@@ -73,6 +67,8 @@ local byPart = setmetatable({}, { __mode = "k" })      -- [part] = entry
 local waiting = {}                                     -- entries whose launch time hasn't come yet
 local folder
 local collapsing = false
+local paused = false
+local pausedAt = nil
 local started = false
 
 local toServer, toClient
@@ -206,6 +202,40 @@ function ClientBoard.isCollapsing()
 	return collapsing
 end
 
+function ClientBoard.isPaused()
+	return paused
+end
+
+-- ── carrying ──────────────────────────────────────────────────────────
+-- Grabbing is entirely local: the ball is a part on this machine, the
+-- player is simulated on this machine, and nothing about picking one up
+-- changes what it's worth. The server is told only so the orb cap
+-- doesn't auto-sell a ball out of the player's hands.
+
+function ClientBoard.hold(part)
+	local entry = byPart[part]
+	if not entry then
+		return false
+	end
+	entry.held = true
+	send(ToServer.HOLD, entry.id)
+	return true
+end
+
+function ClientBoard.release(part)
+	local entry = byPart[part]
+	if not entry then
+		return false
+	end
+	entry.held = nil
+	send(ToServer.RELEASE, entry.id)
+	return true
+end
+
+function ClientBoard.reportTrickShot()
+	send(ToServer.TRICK_SHOT)
+end
+
 -- ── spawning ──────────────────────────────────────────────────────────
 
 local function launch(entry)
@@ -293,7 +323,7 @@ end
 -- any billboard whose ball changed size.
 
 local function stepLaunches()
-	if #waiting == 0 then
+	if paused or #waiting == 0 then
 		return
 	end
 
@@ -312,9 +342,52 @@ local function stepLaunches()
 	end
 end
 
+-- Tells the server a ball went over the edge, exactly once, and leaves
+-- the part falling so it reads as an orb going over rather than
+-- blinking out. Client-created parts aren't reliably swept up by
+-- FallenPartsDestroyHeight, and one that wedged under the platform
+-- would never reach it anyway, so this cleans up after itself.
+local function reportFall(entry)
+	if entry.state == "falling" then
+		return
+	end
+	entry.state = "falling"
+
+	-- HudUI's ball count and SellClient's own only-orb check both read
+	-- this attribute to mean "on its way out, don't count it". Without
+	-- it a ball that's already been replaced keeps counting for the
+	-- seconds it spends falling.
+	if entry.part then
+		entry.part:SetAttribute("Split", true)
+	end
+
+	-- The server decides what a fall is worth and what replaces it. All
+	-- this says is that it happened.
+	send(ToServer.FELL, entry.id)
+
+	task.delay(Config.VOID_FALLBACK_TIMEOUT, function()
+		if entries[entry.id] == entry then
+			forget(entry)
+		end
+	end)
+end
+
 local function stepBall(entry)
 	local part = entry.part
-	if not part or not part.Parent then
+	if not part or not part.Parent or paused then
+		return
+	end
+
+	-- The catch-all, checked in every state. The state machine below
+	-- only notices a SETTLED ball dropping through the platform, which
+	-- is the normal way an orb leaves — but a ball deflected on the way
+	-- up never settles at all, and used to fall forever: never reported,
+	-- so never replaced, while the ledger went on counting it against
+	-- the orb cap. That's a board that quietly thins out and then stops
+	-- refilling.
+	if part.Position.Y < Config.VOID_Y then
+		reportFall(entry)
+		forget(entry)
 		return
 	end
 
@@ -360,29 +433,7 @@ local function stepBall(entry)
 	elseif entry.state == "settled" then
 		local position = part.Position
 		if position.Y < Config.FALL_Y or position.Magnitude > Config.MAX_DIST_FROM_ORIGIN then
-			entry.state = "falling"
-
-			-- HudUI's ball count and SellClient's own only-orb check both
-			-- read this attribute to mean "on its way out, don't count
-			-- it". Without it a ball that's already been replaced keeps
-			-- counting for the seconds it spends falling.
-			part:SetAttribute("Split", true)
-
-			-- The server decides what a fall is worth and what replaces
-			-- it. All this says is that it happened.
-			send(ToServer.FELL, entry.id)
-
-			-- The part itself is left falling rather than destroyed, so
-			-- it reads as a ball going over the edge instead of blinking
-			-- out. Client-created parts aren't guaranteed to be swept up
-			-- by FallenPartsDestroyHeight, and a ball that wedged under
-			-- the platform would never reach it anyway, so this cleans up
-			-- after itself either way.
-			task.delay(Config.VOID_FALLBACK_TIMEOUT, function()
-				if entries[entry.id] == entry then
-					forget(entry)
-				end
-			end)
+			reportFall(entry)
 		end
 	end
 end
@@ -405,7 +456,7 @@ end
 -- (it has always done both locally), and the server settles the money.
 function ClientBoard.sell(part)
 	local entry = byPart[part]
-	if not entry or entry.selling or collapsing then
+	if not entry or entry.selling or collapsing or paused then
 		return false
 	end
 	if entry.state ~= "settled" and entry.state ~= "ascending" then
@@ -426,7 +477,7 @@ function ClientBoard.sellBox(parts)
 	local ids = {}
 	for _, part in ipairs(parts) do
 		local entry = byPart[part]
-		if entry and not entry.selling and not collapsing then
+		if entry and not entry.selling and not collapsing and not paused then
 			entry.selling = true
 			table.insert(ids, entry.id)
 			forget(entry)
@@ -641,6 +692,43 @@ local function onCollapse(phase, value)
 	ClientBoard.collapse:Fire(phase, value)
 end
 
+-- ── pause ─────────────────────────────────────────────────────────────
+
+-- Everything stops where it is. Anchoring rather than just not stepping
+-- them: a ball left unanchored would keep rolling off the platform
+-- under its own momentum while the board is meant to be still, and the
+-- fall it reported would be refused by a paused server.
+local function setPaused(value)
+	if value == paused then
+		return
+	end
+	paused = value
+
+	if paused then
+		pausedAt = Workspace:GetServerTimeNow()
+	else
+		-- Hold the launch queue's clock still for the length of the
+		-- pause: a ball that was two seconds from launching should
+		-- still be two seconds from launching. The server does the same
+		-- arithmetic to its own copy off the same two messages, so
+		-- neither side has to re-send anything.
+		local delta = pausedAt and (Workspace:GetServerTimeNow() - pausedAt) or 0
+		pausedAt = nil
+		if delta > 0 then
+			for _, entry in ipairs(waiting) do
+				entry.launchAt += delta
+			end
+		end
+	end
+
+	for _, entry in pairs(entries) do
+		local part = entry.part
+		if part and part.Parent then
+			part.Anchored = paused
+		end
+	end
+end
+
 -- ── incoming ──────────────────────────────────────────────────────────
 
 local function onServerMessage(op, a, b)
@@ -652,6 +740,9 @@ local function onServerMessage(op, a, b)
 
 	elseif op == ToClient.COLLAPSE then
 		onCollapse(a, b)
+
+	elseif op == ToClient.PAUSE then
+		setPaused(a == true)
 
 	elseif op == ToClient.RESET then
 		for _, entry in pairs(entries) do

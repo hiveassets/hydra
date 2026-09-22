@@ -1,10 +1,4 @@
 --[[
-    Board (ModuleScript)
-    Path: ServerScriptService
-    Parent: ServerScriptService
-    Exported: 2026-09-20 22:14:29
-]]
---[[
 	Board (ModuleScript) — place in ServerScriptService
 	(ServerScriptService.Board), alongside BoardService, SellService and
 	the rest of the server scripts.
@@ -54,6 +48,7 @@
 ]]
 
 local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
 
 local Rep = game:GetService("ReplicatedStorage")
 local Config = require(Rep:WaitForChild("BoardConfig"))
@@ -95,7 +90,8 @@ function Board.new(player, bridge)
 	self.bribeUntil = 0
 
 	self.collapsing = false
-	self.paused = false      -- phase 2: AFK
+	self.paused = false
+	self.pausedAt = nil      -- when, so the launch queue's clock can be held still
 	self.alive = true
 
 	self.countdownActive = false
@@ -324,11 +320,17 @@ function Board:_enforceCap()
 	-- the platform and shouldn't count toward how full it is, nor be
 	-- eligible to be sold out from under a queue that hasn't even
 	-- delivered it.
+	--
+	-- A held ball still counts toward how crowded the board is — it's
+	-- sitting right there in front of the player — but is never the one
+	-- picked. Having the orb you're carrying vanish out of your hands
+	-- because the cap ticked over is the kind of thing you'd assume was
+	-- a bug even after someone explained it.
 	local count, smallest = 0, nil
 	for _, entry in pairs(self.balls) do
 		if entry.kind == "ball" and entry.state == "live" then
 			count += 1
-			if not smallest or entry.size < smallest.size then
+			if not entry.held and (not smallest or entry.size < smallest.size) then
 				smallest = entry
 			end
 		end
@@ -489,6 +491,29 @@ function Board:onFell(id)
 		return false, "not a live ball"
 	end
 	if now() < entry.launchAt + Config.MIN_TIME_BEFORE_FALL then
+		-- Refused as a fall, but the ball is still dropped from the
+		-- ledger. The client has already lost it — it watched the thing
+		-- go over the edge — so leaving the entry here would strand a
+		-- ball that exists only on this side: counted against the orb
+		-- cap forever, eventually auto-sold for money nobody earned,
+		-- while the board on screen looks emptier than the count says.
+		--
+		-- What the refusal actually denies is the REPLACEMENT, which is
+		-- the only part worth anything. A player who somehow manages a
+		-- genuinely early fall loses one orb for it; ensureBall covers
+		-- them if it was the last one.
+		self:_forget(id)
+		self:ensureBall()
+
+		-- Studio only: if this ever fires during normal play, the floor
+		-- above is too high and orbs are being quietly lost rather than
+		-- replaced. Worth knowing while testing; not worth a line in a
+		-- live server's log for every exploiter poking at it.
+		if RunService:IsStudio() then
+			warn(("[Board] refused a fall for orb %d — it was only %.2fs old")
+				:format(id, now() - entry.launchAt))
+		end
+
 		return false, "too soon"
 	end
 	if self.collapsing or self.paused then
@@ -600,6 +625,32 @@ end
 -- Something left the board for a reason that pays nobody: a bomb went
 -- off, a magnet finished, a splitter used itself up. Bookkeeping only,
 -- and it can't create anything, so there's nothing here to cheat.
+-- The player picked a ball up. There's nothing to authorise: carrying
+-- an orb doesn't change what it's worth, and a grab that this board
+-- would refuse is a grab the player's own client already refused. The
+-- flag exists purely so the orb cap looks elsewhere (see _enforceCap).
+function Board:onHold(id)
+	local entry = self:entry(id)
+	if not entry or entry.state == "gone" then
+		return false, "unknown"
+	end
+	-- Deliberately not gated on isLive's grace period, unlike the events
+	-- that move money: an orb can be grabbed the instant it appears, and
+	-- refusing the flag for the first fraction of a second would leave
+	-- exactly the ball in the player's hands eligible for the cap.
+	entry.held = true
+	return true
+end
+
+function Board:onRelease(id)
+	local entry = self:entry(id)
+	if not entry then
+		return false, "unknown"
+	end
+	entry.held = nil
+	return true
+end
+
 function Board:onExpired(id)
 	local entry = self:entry(id)
 	if not entry then
@@ -682,13 +733,60 @@ function Board:clear()
 	return true
 end
 
+-- ── pause ─────────────────────────────────────────────────────────────
+
+-- The whole board stops: nothing launches, nothing spawns, nothing
+-- falls, the orb cap doesn't fire and a collapse countdown stands down.
+-- AFK is what calls this today (see AFKHandler).
+--
+-- The launch queue is a clock, so pausing has to hold that clock still
+-- — otherwise every stamp would come due while the player was away and
+-- fifty orbs would launch in one frame on their return, straight into
+-- the orb cap. On resume, every pending stamp moves forward by however
+-- long the pause lasted. The client does exactly the same arithmetic to
+-- its own copies off the same two messages, so neither side has to
+-- re-send anything.
 function Board:setPaused(paused)
-	self.paused = paused == true
+	paused = paused == true
+	if paused == self.paused then
+		return
+	end
+	self.paused = paused
+
+	if paused then
+		self.pausedAt = now()
+		self:_cancelCountdown()
+	else
+		local delta = self.pausedAt and (now() - self.pausedAt) or 0
+		self.pausedAt = nil
+		if delta > 0 then
+			for _, id in ipairs(self.queue) do
+				local entry = self.balls[id]
+				if entry and entry.state == "queued" then
+					entry.launchAt += delta
+				end
+			end
+			self.lastLaunchAt += delta
+		end
+	end
+
+	self:_send(ToClient.PAUSE, paused)
+
+	if not paused then
+		self:ensureBall()
+	end
 end
 
 -- ── the tick ──────────────────────────────────────────────────────────
 
 function Board:_tick()
+	if self.paused then
+		-- Deliberately everything: pruning the queue while paused would
+		-- quietly mark balls as launched that the client is still
+		-- holding back, and the cap and the overflow check have no
+		-- business firing on a board nobody is playing.
+		return
+	end
 	self:_pruneQueue()
 	self:_checkOverflow()
 	self:_enforceCap()

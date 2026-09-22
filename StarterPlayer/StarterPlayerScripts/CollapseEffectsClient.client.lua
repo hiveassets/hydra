@@ -1,12 +1,4 @@
 --[[
-    CollapseEffectsClient (LocalScript)
-    Path: StarterPlayer → StarterPlayerScripts
-    Parent: StarterPlayerScripts
-    Properties:
-        Disabled: false
-    Exported: 2026-09-20 22:14:29
-]]
---[[
 	CollapseEffectsClient (LocalScript) — StarterPlayerScripts
 
 	Everything you see during a collapse that isn't a ball: the colour
@@ -29,8 +21,9 @@
 	reads better anyway: the ramp knows what it's ramping towards.
 
 	The baseline it eases back to is whatever the map's own colour
-	grading was before the telegraph started, captured at that moment
-	rather than assumed, so Studio-side grading survives a collapse.
+	grading was at startup, read once rather than assumed, so Studio-side
+	grading survives a collapse. See the note on `base` below for why
+	"once" matters more than it looks.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -69,21 +62,26 @@ local function stopActiveTweens()
 	table.clear(activeTweens)
 end
 
--- The map's true values, captured the moment a telegraph starts and
--- used by every handler after it, so nothing ever eases back to a
--- hardcoded "normal".
-local base = nil
-
-local function captureBaseline()
-	if not base then
-		base = {
-			saturation = cc.Saturation,
-			contrast = cc.Contrast,
-			tint = cc.TintColor,
-		}
-	end
-	return base
-end
+-- The map's true values, read ONCE, here, before anything in this file
+-- has had a chance to touch them.
+--
+-- The first version captured this lazily, when a telegraph started, and
+-- that quietly ratcheted: a telegraph that gets cancelled eases back to
+-- baseline over half a second, and a collapse eases back over a full
+-- second, so any new telegraph starting inside either of those windows
+-- captured a mid-fade value as its "baseline" — and then restored to
+-- that. Do it a few times in a row, which a board that keeps
+-- re-crossing the overflow line does easily, and contrast walks
+-- steadily upward and never comes back to where it started.
+--
+-- Nothing else in the game writes to this effect, and the map's own
+-- grading is authored in Studio rather than changed at runtime, so one
+-- reading at startup is the true one for the whole session.
+local base = {
+	saturation = cc.Saturation,
+	contrast = cc.Contrast,
+	tint = cc.TintColor,
+}
 
 -- ── camera shake ─────────────────────────────────────────────────────
 -- A NumberValue is tweened from 0 up to the target intensity, and a
@@ -183,7 +181,7 @@ end
 -- ── the four beats ───────────────────────────────────────────────────
 
 local function telegraphStart()
-	local b = captureBaseline()
+	local b = base
 	stopActiveTweens()
 
 	local duration = Config.OVERFLOW_SUSTAIN
@@ -220,9 +218,6 @@ local function telegraphStart()
 end
 
 local function telegraphCancel()
-	if not base then
-		return
-	end
 	stopActiveTweens()
 
 	local fadeTime = V.telegraphCancelFade
@@ -244,12 +239,10 @@ local function telegraphCancel()
 
 	fadeOutShake(fadeTime)
 	FOVController.SetScale(1, TweenInfo.new(fadeTime, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out))
-
-	base = nil
 end
 
 local function collapseCut()
-	local b = captureBaseline()
+	local b = base
 	stopActiveTweens()
 
 	-- Instant, no tween: the collapse firing should read as a hard cut.
@@ -268,19 +261,20 @@ local function collapseCut()
 end
 
 local function collapseResolve()
-	if not base then
-		return
-	end
 	stopActiveTweens()
 
+	-- TintColor as well as the other two. The cut already put it back,
+	-- so this is belt and braces rather than a fix — but every property
+	-- this file ever touches should be named in the one place that
+	-- returns things to normal, or the next person to add a boost has
+	-- to remember to add it here too.
 	local resolveTween = TweenService:Create(cc, TweenInfo.new(Config.COLLAPSE_FADE_TIME), {
 		Saturation = base.saturation,
 		Contrast = base.contrast,
+		TintColor = base.tint,
 	})
 	resolveTween:Play()
 	table.insert(activeTweens, resolveTween)
-
-	base = nil
 end
 
 -- The telegraph fires once a second while the queue is over the line;

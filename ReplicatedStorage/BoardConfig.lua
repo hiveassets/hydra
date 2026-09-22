@@ -1,10 +1,4 @@
 --[[
-    BoardConfig (ModuleScript)
-    Path: ReplicatedStorage
-    Parent: ReplicatedStorage
-    Exported: 2026-09-20 22:14:29
-]]
---[[
 	BoardConfig (ModuleScript) — place directly in ReplicatedStorage
 	(ReplicatedStorage.BoardConfig).
 
@@ -87,6 +81,14 @@ BoardConfig.GROW_FINALIZE_GRACE = 0.1
 -- purpose, well past how long a real fall takes.
 BoardConfig.VOID_FALLBACK_TIMEOUT = 5
 
+-- Anything this far down is gone, whatever state the board thought it
+-- was in. The state machine only watches for a SETTLED ball dropping
+-- below the platform, which misses the ball that gets deflected on the
+-- way up and never rises past it at all — that one would otherwise fall
+-- forever, unreported and unreplaced, while the ledger still counted it
+-- against the orb cap.
+BoardConfig.VOID_Y = -120
+
 -- ── special rolls (dormant until phase 3) ─────────────────────────────
 BoardConfig.SPECIAL_TOTAL_CHANCE = 0.15 -- share of cleared rolls that become some special
 BoardConfig.SPECIAL_COOLDOWN = 10       -- seconds between special rolls, shared across every kind
@@ -150,6 +152,7 @@ BoardConfig.BADGES = {
 	collapse = 3848961087513729,   -- also the bribe's shop gate
 	mimicWake = 3684816254175058,  -- also the pet mimic's shop gate
 	millionaire = 3176970008807555,
+	trickShot = 776457600018699,
 	sellTier1 = 4491513065757921,
 	sellTier2 = 3248473547490503,
 }
@@ -161,6 +164,21 @@ BoardConfig.SELL_BADGE_THRESHOLDS = {
 
 BoardConfig.MILLIONAIRE_THRESHOLD = 1000000
 
+-- ── grab ──────────────────────────────────────────────────────────────
+BoardConfig.GRAB_RANGE = 20          -- studs from the player to the ball's surface
+BoardConfig.THROW_SPEED = 90         -- every throw releases at full strength
+BoardConfig.HOLD_CLEARANCE = 3       -- studs between the bottom of a carried ball and the player
+BoardConfig.REGRAB_DELAY = 0.35      -- ignore a just-thrown ball as a target for this long
+
+-- The trick-shot badge: a throw released from the small pad in the
+-- middle of the platform that then clears the edge without touching
+-- anything. The client watches the throw (it owns the physics); the
+-- server checks the player was actually standing on the pad, which is
+-- the one half of it the server can still see.
+BoardConfig.TRICK_ZONE_RADIUS = 5
+BoardConfig.TRICK_SHOT_Y = -10
+BoardConfig.TRICK_ZONE_SERVER_SLACK = 12 -- how far they're allowed to have wandered by the time the report lands
+
 -- ── other players ─────────────────────────────────────────────────────
 -- How see-through everyone else is on your screen. 0.8 is "20% opaque":
 -- clearly there, clearly not part of your board. They can't touch your
@@ -170,11 +188,19 @@ BoardConfig.REMOTE_PLAYER_TRANSPARENCY = 0.8
 
 -- ── anti-cheat margins ───────────────────────────────────────────────
 -- A ball can't be reported as fallen before it has physically had time
--- to get out of the launch and back down past FALL_Y. Under plain
--- gravity that round trip is about a second; this is deliberately well
--- under that, because a bomb's impulse can genuinely fling a ball off
--- early. It's a floor against nonsense, not a simulation.
-BoardConfig.MIN_TIME_BEFORE_FALL = 0.4
+-- to get out of the launch and back down past FALL_Y. It's a floor
+-- against nonsense, not a simulation.
+--
+-- Don't raise this without doing the arithmetic. An undisturbed ball
+-- takes about a second, but that isn't the bound that matters: a ball
+-- becomes settled the moment it rises past COL_Y, roughly 0.27s after
+-- launch, and a deflection off a crowded board can put it under FALL_Y
+-- about 0.12s after that. So the real floor is a hair under 0.4 — which
+-- is where this started, and refusing legitimate falls at the margin
+-- costs the player an orb every time it happens. 0.25 keeps the
+-- nonsense out with room to spare, and the launch queue is what
+-- actually caps how fast orbs can be duplicated anyway.
+BoardConfig.MIN_TIME_BEFORE_FALL = 0.25
 
 -- How long after its scheduled launch the server treats a queued ball as
 -- actually on the board. Roughly the time it takes to rise past COL_Y.
