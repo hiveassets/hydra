@@ -2,6 +2,12 @@
     BoardService (ModuleScript)
     Path: ServerScriptService
     Parent: ServerScriptService
+    Exported: 2026-09-23 02:07:54
+]]
+--[[
+    BoardService (ModuleScript)
+    Path: ServerScriptService
+    Parent: ServerScriptService
     Exported: 2026-09-23 00:26:21
 ]]
 --[[
@@ -43,6 +49,7 @@
 ]]
 
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
 local Rep = game:GetService("ReplicatedStorage")
 
@@ -59,6 +66,7 @@ local BoardService = {}
 
 local boards = {}      -- [player] = Board
 local rateWindow = {}  -- [player] = { second = os.clock() rounded, count = n }
+local resyncScheduled = {} -- [player] = true while a post-drop rebuild is pending
 
 -- ── upgrade gates ─────────────────────────────────────────────────────
 -- Checked fresh on every request rather than trusted from the client,
@@ -196,6 +204,7 @@ local function removePlayer(player)
 		boards[player] = nil
 	end
 	rateWindow[player] = nil
+	resyncScheduled[player] = nil
 end
 
 -- ── rate limit ────────────────────────────────────────────────────────
@@ -290,6 +299,24 @@ handlers[ToServer.SPLIT] = function(_player, board, splitterId, ballId)
 	end
 end
 
+-- The merge counterpart, with the same reasoning about which id to hand
+-- reject(): an orb the ledger still holds first (the client has pulled in
+-- something still counted here), then the merger (a use the client spent
+-- and this side didn't charge).
+handlers[ToServer.MERGE] = function(_player, board, mergerId, idA, idB)
+	local ok, reason = board:onMerge(mergerId, idA, idB)
+	if ok then
+		return
+	end
+	if board:entry(idA) then
+		board:reject(idA, reason)
+	elseif board:entry(idB) then
+		board:reject(idB, reason)
+	elseif board:entry(mergerId) then
+		board:reject(mergerId, reason)
+	end
+end
+
 handlers[ToServer.EXPIRED] = function(_player, board, id)
 	board:onExpired(id)
 end
@@ -334,6 +361,28 @@ toServer.OnServerEvent:Connect(function(player, op, ...)
 	end
 
 	if not underRateLimit(player) then
+		-- Dropped — but nearly everything a client sends is something it
+		-- has already done on its own screen, so a dropped message is a
+		-- board the two sides now disagree about, silently. Nothing about
+		-- the dropped message can be trusted or replayed, so instead: once
+		-- the flood has passed, send this player their board again from
+		-- the ledger. One rebuild per flood, however many were dropped.
+		if op ~= ToServer.READY and not resyncScheduled[player] then
+			resyncScheduled[player] = true
+			if RunService:IsStudio() then
+				warn(("[BoardService] %s went over %d messages a second — rebuilding their board once it calms down")
+					:format(player.Name, Config.EVENT_RATE_LIMIT))
+			end
+			task.delay(1, function()
+				resyncScheduled[player] = nil
+				local b = boards[player]
+				-- A collapse wipes and restocks the board anyway, and a
+				-- rebuild would only fight its animation.
+				if b and b.alive and not b.collapsing then
+					b:resend()
+				end
+			end)
+		end
 		return
 	end
 

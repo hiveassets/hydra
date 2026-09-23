@@ -2,6 +2,12 @@
     CollisionGroups (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
+    Exported: 2026-09-23 02:07:54
+]]
+--[[
+    CollisionGroups (ModuleScript)
+    Path: ReplicatedStorage
+    Parent: ReplicatedStorage
     Exported: 2026-09-23 00:26:22
 ]]
 --[[
@@ -220,9 +226,14 @@ local GROUPS = {
 	},
 	{
 		name = "HeldBall",
-		doc = "A ball currently being carried. Note it is NOT in Balls while held, which is why AFKPlayers has to name it separately above.",
-		owner = "GrabHandler (RequestGrab) + GrabClient's optimistic local flip",
-		passesThrough = { Tag "Ball", "GrabHolder" },
+		doc = "A ball currently being carried. Collides with nothing at all — orbs, awake splitters and mergers, growing split halves, players, scenery or the platform — so what's in your hands can't shove, snag or be snagged by anything. GrabClient lifts it clear of the floor before handing it back to its normal group on release. Note it is NOT in Balls while held, which is why AFKPlayers names it separately above.",
+		owner = "GrabClient (beginCarry / stopCarry)",
+		-- Used to be { Tag "Ball", "GrabHolder" }: plain orbs and the person
+		-- carrying it, and nothing else. So it still collided with every
+		-- Passthrough group — an awake splitter or merger, a split half
+		-- growing in — plus other players and scenery. Carrying something
+		-- is meant to take it out of the world entirely.
+		passesThroughEverything = true,
 	},
 	{
 		name = "GrabHolder",

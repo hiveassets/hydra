@@ -2,6 +2,12 @@
     BoardProtocol (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
+    Exported: 2026-09-23 02:07:55
+]]
+--[[
+    BoardProtocol (ModuleScript)
+    Path: ReplicatedStorage
+    Parent: ReplicatedStorage
     Exported: 2026-09-23 00:26:23
 ]]
 --[[
@@ -84,6 +90,10 @@ BoardProtocol.ToServer = {
 	-- all of that out from its own ledger and sends the halves back as an
 	-- ordinary SPAWN.
 	SPLIT = "split",
+	-- (mergerId, idA, idB) this merger touched these two orbs at once and
+	-- has already started pulling both in. Same shape as SPLIT: ids only.
+	-- The result's size, colour and radiance all come from the ledger.
+	MERGE = "merge",
 }
 
 -- ── server to client ──────────────────────────────────────────────────
@@ -95,12 +105,20 @@ BoardProtocol.ToClient = {
 	-- machine without the server having to send one message per launch.
 	--
 	-- Two optional fields, for an orb that grows out of another orb
-	-- rather than launching from the spawn point (a split's halves):
+	-- rather than launching from the spawn point (a split's halves, a
+	-- merge's result):
 	--   emergeFrom   the id of the orb that was consumed to make it — an
 	--                id the CLIENT named in its own report, so it's always
-	--                one the client already knows about
-	--   emergeCount  how many results share that source (2 for a split),
-	--                so the client can spread their hop directions evenly
+	--                one the client already knows about. For a merge,
+	--                the first of the two.
+	--   emergeCount  how many results share that source (2 for a split,
+	--                1 for a merge), so the client can spread their hop
+	--                directions evenly
+	--
+	-- And one for mergers: bornSize, the size it spawned at, which its
+	-- budget is measured against (see BoardRules.mergerAfterMerge). Sent
+	-- so a merger rebuilt by a resync shrinks in the same steps the
+	-- server is counting.
 	-- The server never sends a position. It has never known where
 	-- anything is; the client recorded where the special was standing at
 	-- the moment it acted, and looks that up by emergeFrom. An entry

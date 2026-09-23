@@ -3,7 +3,7 @@
     Path: ReplicatedStorage → Icon → Elements
     Parent: Elements
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-23 00:26:22
+    Exported: 2026-09-23 02:07:54
 ]]
 -- I named this 'Widget' instead of 'Icon' to make a clear difference between the icon *object* and
 -- the icon (aka Widget) instance.

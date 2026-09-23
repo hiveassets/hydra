@@ -2,6 +2,12 @@
     Board (ModuleScript)
     Path: ServerScriptService
     Parent: ServerScriptService
+    Exported: 2026-09-23 02:07:54
+]]
+--[[
+    Board (ModuleScript)
+    Path: ServerScriptService
+    Parent: ServerScriptService
     Exported: 2026-09-23 00:26:21
 ]]
 --[[
@@ -33,6 +39,9 @@
 			growingUntil = for a split half, when it finishes growing in
 			           on the client (nil for everything else),
 		}
+
+	A merger also carries bornSize, the size it spawned at: each merge
+	takes a fifth of THAT off its size (see onMerge).
 
 	A splitter's budget is its size: every split takes SHRINK_PER_SPLIT
 	off it here, and the split that would take it to its floor spends it
@@ -362,6 +371,13 @@ function Board:queueSpawn(size, opts, batch)
 		-- yet a solid orb — and the cap never picks it (see _enforceCap).
 		growingUntil = opts.growingUntil,
 	}
+	-- A merger's budget is measured in fifths of the size it was born
+	-- at (see BoardRules.mergerAfterMerge). A deploy from the stash is a
+	-- new birth at whatever size it was pocketed at — which is what the
+	-- old MergerFuse did too, reading its size fresh as it woke.
+	if kind == "merger" then
+		entry.bornSize = entry.size
+	end
 	self.nextId += 1
 	self.balls[entry.id] = entry
 	table.insert(self.queue, entry.id)
@@ -382,6 +398,7 @@ function Board:queueSpawn(size, opts, batch)
 		-- BoardProtocol's SPAWN for what the client does with these
 		emergeFrom = opts.emergeFrom,
 		emergeCount = opts.emergeCount,
+		bornSize = entry.bornSize,
 	}
 
 	if batch then
@@ -754,6 +771,65 @@ function Board:onSplit(splitterId, ballId)
 	return true
 end
 
+-- A merger touched two orbs at once. A stock merge is value-neutral —
+-- the sizes simply add — but it still goes through the STRICT predicate,
+-- because radiance carries: merge a size-3 radiant with a size-50 plain
+-- orb and the result is a radiant 53, which sells for three times as
+-- much. That's value, so it's held to what a fall is held to.
+--
+-- Same shape as onSplit otherwise: ids in, everything else from here.
+function Board:onMerge(mergerId, idA, idB)
+	if self.collapsing then
+		return false, "board is not running"
+	end
+	-- Not refused while paused, for the reason onSplit gives.
+
+	local merger = self:entry(mergerId)
+	if not (merger and merger.kind == "merger" and self:isLive(merger)) then
+		return false, "not a live merger"
+	end
+	if idA == idB then
+		return false, "the same orb twice"
+	end
+	local a, b = self:entry(idA), self:entry(idB)
+	if not (a and a.kind == "ball" and self:isLive(a)) or not (b and b.kind == "ball" and self:isLive(b)) then
+		return false, "not two live orbs"
+	end
+	local minSize = Config.MERGER.MIN_MERGE_SIZE
+	if a.size <= minSize or b.size <= minSize then
+		return false, "too small to merge"
+	end
+
+	local nextSize, spent = Rules.mergerAfterMerge(merger.size, merger.bornSize or merger.size)
+	if spent then
+		self:_forget(mergerId) -- the client is already playing its send-off
+	else
+		merger.size = nextSize
+	end
+
+	-- Both are converging into the merger on the client right now.
+	self:_forget(idA)
+	self:_forget(idB)
+
+	local t = now()
+	self:queueSpawn(Rules.mergeSize(a.size, b.size), {
+		forceBall = true, -- a result is never a fresh roll
+		radiant = a.radiant or b.radiant, -- either one is enough
+		color = Rules.mixColor(a.color, a.size, b.color, b.size),
+		at = t,
+		whilePaused = true,
+		-- keyed by the first id, which is where the client wrote down
+		-- the merger's position
+		emergeFrom = idA,
+		emergeCount = 1,
+		growingUntil = t + Config.MERGER.CONVERGE_TIME + Config.GROW_TIME,
+	})
+
+	self:ensureBall()
+	self:_enforceCap()
+	return true
+end
+
 -- Sells one ball at the price the ledger says it's worth. `check` is
 -- BoardService's upgrade gate (defuser/degausser); it's passed in rather
 -- than read here so this file stays out of the Upgrades folder.
@@ -913,7 +989,10 @@ function Board:onStash(id, check)
 
 	local snapshot = {
 		kind = entry.kind,
-		size = entry.size,
+		-- Whole numbers only in a slot. Everything's already whole except
+		-- a merger partway through its budget (a 7 steps down by 1.4), and
+		-- it's reborn at whatever size comes back out anyway.
+		size = Rules.clampSize(entry.size),
 		color = entry.color,
 		radiant = entry.radiant,
 	}
@@ -1032,6 +1111,7 @@ function Board:snapshot()
 				radiant = entry.radiant,
 				color = entry.color,
 				launchAt = entry.launchAt,
+				bornSize = entry.bornSize,
 			})
 		end
 	end

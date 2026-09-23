@@ -2,6 +2,12 @@
     ClientBoard (ModuleScript)
     Path: StarterPlayer → StarterPlayerScripts
     Parent: StarterPlayerScripts
+    Exported: 2026-09-23 02:07:55
+]]
+--[[
+    ClientBoard (ModuleScript)
+    Path: StarterPlayer → StarterPlayerScripts
+    Parent: StarterPlayerScripts
     Exported: 2026-09-23 00:26:23
 ]]
 --[[
@@ -227,9 +233,28 @@ end
 
 local lastResyncAt = -math.huge
 
+-- A request inside the cooldown is DEFERRED to the end of it, not
+-- dropped. It used to be dropped, which meant a second divergence within
+-- three seconds of the first — two refused splits in a busy moment, say —
+-- was simply never repaired: the orb stayed counted on the server and
+-- missing here for good. One deferred request stands in for any number
+-- asked for during the same cooldown; the resync it triggers repairs all
+-- of them at once.
+local resyncDeferred = false
+
 local function requestResync(why)
 	local t = os.clock()
-	if t - lastResyncAt < Config.RESYNC_COOLDOWN then
+	local wait = lastResyncAt + Config.RESYNC_COOLDOWN - t
+	if wait > 0 then
+		if not resyncDeferred then
+			resyncDeferred = true
+			task.delay(wait, function()
+				resyncDeferred = false
+				lastResyncAt = os.clock()
+				warn(("[ClientBoard] asking the server to resend the board (held back by the cooldown): %s"):format(why))
+				send(ToServer.READY)
+			end)
+		end
 		return false
 	end
 	lastResyncAt = t
@@ -627,6 +652,10 @@ local function startBehaviour(entry)
 		-- this one came from the server.
 		size = entry.size,
 		radiant = entry.radiant,
+		-- A merger's budget is measured against this, not its current
+		-- size. The server sends it with every spawn and resync, so a
+		-- rebuilt merger steps down the same way the ledger does.
+		bornSize = entry.bornSize or entry.size,
 
 		part = part,
 		folder = folder,
@@ -697,6 +726,12 @@ local function startBehaviour(entry)
 		live = function()
 			return entry.state == "settled"
 				and serverNow() >= entry.launchAt + Config.LAUNCH_TO_LIVE + Config.LIVE_MARGIN
+		end,
+
+		-- The board's state for this orb ("settled", "falling", ...). For
+		-- diagnostics; behaviours decide things with live() instead.
+		state = function()
+			return entry.state
 		end,
 
 		-- See absorbable / absorb / emergeAt above.
@@ -843,13 +878,18 @@ local function launch(entry)
 	if emerge then
 		-- The hop is simulated by hand while the orb is anchored for its
 		-- grow, then handed to real physics as a velocity. Its outward
-		-- speed is random but floored, so two halves given opposite
-		-- directions always clear each other's radius by touchdown —
-		-- unfloored, a roll near 0 left them overlapping when they went
-		-- solid, and the solver fired them both off the platform.
+		-- speed is random, and floored when it has siblings, so two
+		-- halves given opposite directions always clear each other's
+		-- radius by touchdown — unfloored, a roll near 0 left them
+		-- overlapping when they went solid, and the solver fired them
+		-- both off the platform.
+		--
+		-- Only when it has siblings. A merge result is alone, and the
+		-- floor scales with size: a size-98 result would have been fired
+		-- off at 80 studs a second to clear a sibling that doesn't exist.
 		local cfg = Config.EMERGE
 		local flight = 2 * cfg.POP_UP_SPEED / Workspace.Gravity
-		local minSpeed = (size / 2 + 1) / flight
+		local minSpeed = (emerge.count or 1) > 1 and (size / 2 + 1) / flight or 0
 		local speed = math.max(minSpeed, rand() * cfg.POP_H_SPEED)
 		emerge.hop = emerge.dir * speed
 		emerge.flight = flight
@@ -940,6 +980,7 @@ local function addSpawnEntries(list)
 				color = data.color,
 				launchAt = data.launchAt,
 				stashed = data.stashed,
+				bornSize = data.bornSize, -- a merger's; see BoardRules.mergerAfterMerge
 				state = "queued",
 			}
 
@@ -957,6 +998,7 @@ local function addSpawnEntries(list)
 					position = site.position,
 					readyAt = site.readyAt,
 					dir = Vector3.new(math.cos(angle), 0, math.sin(angle)),
+					count = count,
 				}
 				if site.used >= count then
 					emergeSites[data.emergeFrom] = nil
@@ -1363,6 +1405,14 @@ local function autoSellVisual(entry)
 	local position = part.Position
 	local size = entry.size
 
+	-- The server has already forgotten it. For the 0.3s it spends fading
+	-- out here it's still a settled orb as far as everything else can
+	-- tell — and a splitter that took it in that window reported a split
+	-- of an orb the server no longer had. Marked as on its way out, which
+	-- keeps it away from splitters, sells and the stash alike.
+	entry.retiring = true
+	part.CanQuery = false
+
 	-- Cyan, not the seller's yellow: this is the board taking a ball
 	-- away rather than the player cashing one in, and the colour is what
 	-- tells those apart at a glance.
@@ -1672,10 +1722,25 @@ end
 
 local emptyFor = 0
 
+-- What the server actually guarantees is a PLAIN orb: its ensureBall
+-- counts kind "ball" only, queued ones included. So that's what this
+-- looks for. It used to look for anything at all, which meant a splitter
+-- or merger still sitting on the board kept it quiet while the server
+-- waited on an orb that no longer existed here — exactly the "sold
+-- everything and nothing came back" case.
+local function hasPlainOrb()
+	for _, entry in pairs(entries) do
+		if entry.kind == "ball" then
+			return true
+		end
+	end
+	return false
+end
+
 local function stepEmptyWatchdog(dt)
 	-- A collapse empties the board on purpose, and a paused board isn't
 	-- meant to be doing anything at all.
-	if collapsing or paused or next(entries) ~= nil then
+	if collapsing or paused or hasPlainOrb() then
 		emptyFor = 0
 		return
 	end
@@ -1683,7 +1748,7 @@ local function stepEmptyWatchdog(dt)
 	emptyFor += dt
 	if emptyFor >= Config.EMPTY_BOARD_GRACE then
 		emptyFor = 0
-		requestResync("the board has been empty too long")
+		requestResync("no plain orb on the board for too long")
 	end
 end
 

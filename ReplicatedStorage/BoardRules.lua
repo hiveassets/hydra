@@ -2,6 +2,12 @@
     BoardRules (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
+    Exported: 2026-09-23 02:07:55
+]]
+--[[
+    BoardRules (ModuleScript)
+    Path: ReplicatedStorage
+    Parent: ReplicatedStorage
     Exported: 2026-09-23 00:26:23
 ]]
 --[[
@@ -162,10 +168,37 @@ function BoardRules.splitterAfterSplit(size)
 end
 
 function BoardRules.mergerUses(size, shrinkFraction, floor)
-	shrinkFraction = shrinkFraction or (1 / 5)
-	floor = floor or 3
+	shrinkFraction = shrinkFraction or Config.MERGER.SHRINK_FRACTION
+	floor = floor or Config.MERGER.FLOOR
 	local steps = (1 / shrinkFraction) * (1 - floor / math.max(size, 1))
 	return math.max(1, math.ceil(steps))
+end
+
+-- The merger's counterpart to splitterAfterSplit. Each merge takes a
+-- fixed fraction of the size the merger was BORN at, not of what's left
+-- — a fraction of the current size would approach the floor forever and
+-- never reach it. So the ledger remembers bornSize alongside size.
+--
+-- The sizes this produces aren't whole numbers (a 7 steps by 1.4). That's
+-- fine: a merger's size is its budget and how big it's drawn, never a
+-- price, and the stash rounds it when it pockets one.
+function BoardRules.mergerAfterMerge(size, bornSize)
+	local cfg = Config.MERGER
+	local nextSize = size - bornSize * cfg.SHRINK_FRACTION
+	return nextSize, nextSize <= cfg.FLOOR
+end
+
+-- The merge result's colour: a size-weighted blend, so the bigger orb
+-- pulls it further toward its own colour — a 40 merged with a 10 lands
+-- much closer to the 40's. Lives here rather than with the animation
+-- because a stash slot stores colour, so the server has to be the one
+-- that decides it.
+function BoardRules.mixColor(colorA, sizeA, colorB, sizeB)
+	local total = sizeA + sizeB
+	if total <= 0 then
+		return colorA
+	end
+	return colorA:Lerp(colorB, sizeB / total)
 end
 
 -- ── prices ────────────────────────────────────────────────────────────

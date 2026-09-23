@@ -3,7 +3,7 @@
     Path: StarterPlayer → StarterPlayerScripts → RbxCharacterSounds
     Parent: RbxCharacterSounds
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-23 00:26:24
+    Exported: 2026-09-23 02:07:56
 ]]
 local ROOT_ALIAS = "root"
 

@@ -2,6 +2,12 @@
     BoardConfig (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
+    Exported: 2026-09-23 02:07:55
+]]
+--[[
+    BoardConfig (ModuleScript)
+    Path: ReplicatedStorage
+    Parent: ReplicatedStorage
     Exported: 2026-09-23 00:26:23
 ]]
 --[[
@@ -142,7 +148,7 @@ BoardConfig.SPECIAL_MIN_BALLS = 2       -- board must already have this many bal
 --   bomb      5      ← step 1, live
 --   magnet    3      ← step 2, live
 --   splitter  2      ← step 3, live
---   merger    1      ← step 4
+--   merger    1      ← step 4, live
 --   mimic     0.05   ← step 5
 --
 -- The radiant variants (step 6) aren't kinds of their own; they're the
@@ -153,7 +159,7 @@ BoardConfig.SPECIAL_WEIGHTS = {
 	magnet = 3,
 	mimic = 0,
 	splitter = 2,
-	merger = 0,
+	merger = 1,
 }
 
 -- ── what each kind looks like ─────────────────────────────────────────
@@ -430,6 +436,49 @@ BoardConfig.SPLITTER = {
 	CENTER_PULL_MAX_ACCEL = 5,
 }
 
+-- ── merger ────────────────────────────────────────────────────────────
+-- Every number lifted from MergerFuse unchanged. The splitter's mirror:
+-- it waits for TWO orbs touching it at once and turns them into one,
+-- sizes simply added. Same lifecycle (see Behaviours → Absorber), its
+-- own colours and its own budget.
+BoardConfig.MERGER = {
+	DEFAULT_COLOR = Color3.fromRGB(152, 255, 0),
+	PULSE_COLOR = Color3.fromRGB(0, 255, 255),
+	PULSE_TIME = 3,
+
+	-- The budget. Each merge takes a fifth of the merger's ORIGINAL size
+	-- off it, so the steps are equal whatever size it spawned at, and the
+	-- merge whose shrink would land at or below FLOOR is its last. That's
+	-- exactly the 5th for anything big enough; a small one runs out
+	-- sooner because the floor bites first (a 10 is worth 4).
+	SHRINK_FRACTION = 1 / 5,
+	FLOOR = 3,
+	SHRINK_TIME = 0.15,
+	COOLDOWN = 0.1,
+
+	-- An orb bigger than this can be merged. Deliberately one BELOW the
+	-- splitter's floor of 3: a 3 can never be split again, so a merge is
+	-- the only way it gets back into play as something bigger. Since no
+	-- orb is ever smaller than 3, in practice every orb qualifies.
+	MIN_MERGE_SIZE = 2,
+
+	-- Identical to the splitter's, for the identical reason.
+	GROUNDED_VY = 1.5,
+	GROUNDED_FRAMES = 2,
+	GROUNDED_TIME = 1 / 30,
+
+	CONVERGE_TIME = 0.3,
+
+	VANISH_TIME = 1,
+	VANISH_FLASH_COLOR = Color3.fromRGB(0, 255, 0), -- lime, the splitter's magenta's opposite
+	VANISH_FLASH_START = Color3.new(0, 0, 0),
+	VANISH_FLASH_SCALE = 2,
+
+	CENTER_PULL_RADIUS = 50,
+	CENTER_PULL_MIN_ACCEL = 2,
+	CENTER_PULL_MAX_ACCEL = 5,
+}
+
 -- ── emerging results ──────────────────────────────────────────────────
 -- An orb that comes out of another orb instead of the spawn point: the
 -- two halves of a split today, a merge result in step 4. Lifted from
@@ -601,10 +650,20 @@ BoardConfig.EMPTY_BOARD_GRACE = 2.5
 BoardConfig.RESYNC_COOLDOWN = 3
 
 -- Client to server messages allowed per second, per player, before the
--- rest of that second's messages are dropped. Generous: a busy split
--- cascade is only a handful a second, and Roblox itself cuts off around
--- 500. Phase 4 replaces this with per-event limits and reporting.
-BoardConfig.EVENT_RATE_LIMIT = 40
+-- rest of that second's messages are dropped. Roblox itself cuts off
+-- around 500. Phase 4 replaces this with per-event limits and reporting.
+--
+-- This was 40, on the assumption that a busy board sends a handful a
+-- second. With specials it doesn't: a splitter or merger can act ten
+-- times a second each, and every orb that goes over the edge is a
+-- message too. And a dropped message is not harmless here — every one of
+-- them is something the client has ALREADY done (an orb pulled into a
+-- splitter, an orb gone over the edge), so dropping it leaves an orb the
+-- server still counts and nobody can see. That's what stopped the board
+-- restocking after a sell-everything. BoardService now rebuilds the
+-- board if it ever has to drop one, but the limit shouldn't be what a
+-- legitimate board runs into.
+BoardConfig.EVENT_RATE_LIMIT = 120
 
 -- ── sounds the board plays (client-side) ──────────────────────────────
 BoardConfig.SOUNDS = {
@@ -642,6 +701,10 @@ BoardConfig.SOUNDS = {
 	-- The splitter. Played where the absorbed orb was, the moment it's
 	-- touched — same place and moment the old "positional" relay used.
 	split = { id = "rbxassetid://101410298856316", volume = 1 },
+
+	-- The merger. Played at the merger's centre, where both orbs are
+	-- headed — the same place the old positional relay played it.
+	merge = { id = "rbxassetid://86932397872773", volume = 1 },
 }
 
 -- ── collapse visuals (client-side, but shared so one file owns tuning) ─

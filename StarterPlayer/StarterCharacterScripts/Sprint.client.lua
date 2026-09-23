@@ -4,7 +4,7 @@
     Parent: StarterCharacterScripts
     Properties:
         Disabled: false
-    Exported: 2026-09-23 00:26:24
+    Exported: 2026-09-23 02:07:56
 ]]
 --[[
     Sprint (LocalScript)

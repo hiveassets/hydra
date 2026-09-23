@@ -3,7 +3,7 @@
     Path: StarterPlayer → StarterPlayerScripts → PlayerModule → CommonUtils
     Parent: CommonUtils
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-23 00:26:24
+    Exported: 2026-09-23 02:07:56
 ]]
 --!strict
 -- Utility module for handling User Fast Flags
