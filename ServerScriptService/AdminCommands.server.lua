@@ -5,6 +5,15 @@
     Properties:
         Disabled: false
         RunContext: Enum.RunContext.Legacy
+    Exported: 2026-09-23 00:26:21
+]]
+--[[
+    AdminCommands (Script)
+    Path: ServerScriptService
+    Parent: ServerScriptService
+    Properties:
+        Disabled: false
+        RunContext: Enum.RunContext.Legacy
     Exported: 2026-09-22 18:28:56
 ]]
 --[[

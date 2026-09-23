@@ -2,6 +2,12 @@
     Bomb (ModuleScript)
     Path: ReplicatedStorage → Behaviours
     Parent: Behaviours
+    Exported: 2026-09-23 00:26:23
+]]
+--[[
+    Bomb (ModuleScript)
+    Path: ReplicatedStorage → Behaviours
+    Parent: Behaviours
     Exported: 2026-09-22 18:28:57
 ]]
 --[[
@@ -250,8 +256,7 @@ local function explode(ctx)
 				-- the blast actually pushed, so the two can never
 				-- disagree about what "got hit" means. Anything excluded
 				-- by kind still takes the push, it just doesn't light up.
-				local kind = ctx.kindOf(other)
-				if not (kind and cfg.HIT_FLASH_EXCLUDES[kind]) then
+				if ctx.config.highlightable(ctx.kindOf(other)) then
 					ctx.effects.fadeOut(other, cfg.HIT_COLOR, cfg.HIT_FADE_TIME)
 				end
 			end

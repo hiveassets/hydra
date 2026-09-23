@@ -4,6 +4,14 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
+    Exported: 2026-09-23 00:26:24
+]]
+--[[
+    SellClient (LocalScript)
+    Path: StarterPlayer → StarterPlayerScripts
+    Parent: StarterPlayerScripts
+    Properties:
+        Disabled: false
     Exported: 2026-09-22 18:28:59
 ]]
 --[[
@@ -693,7 +701,10 @@ local function updateHover()
 	-- starts selling it and replicates to every client, so this stops
 	-- us from ever highlighting (and by extension clicking) a ball
 	-- that's already mid-sell out from under another sale
-	if target and target.Parent == bf and isSellable(target) and not selling[target] and not target:GetAttribute("PendingSell") then
+	-- ClientBoard.canSell is the board's half of the question: an orb
+	-- being pulled into a splitter, or already on its way off the edge,
+	-- shouldn't light up as something you can click.
+	if target and target.Parent == bf and isSellable(target) and ClientBoard.canSell(target) and not selling[target] and not target:GetAttribute("PendingSell") then
 		hovered = target
 		highlight = Instance.new("Highlight")
 		highlight.FillColor = colorFor(target)
@@ -902,7 +913,7 @@ local function updateBoxSelect()
 	-- shouldn't light back up just because the box happens to be
 	-- passing over its now-invisible or about-to-vanish hitbox
 	for _, obj in ipairs(bf:GetChildren()) do
-		if obj.Name == ballT.Name and not obj:GetAttribute("IsRadiant") and not selling[obj] and not obj:GetAttribute("PendingSell") and not obj:GetAttribute("Split") then
+		if obj.Name == ballT.Name and not obj:GetAttribute("IsRadiant") and not selling[obj] and not obj:GetAttribute("PendingSell") and not obj:GetAttribute("Split") and ClientBoard.canSell(obj) then
 			local screen, onScreen = camera:WorldToViewportPoint(obj.Position)
 			local inside = onScreen
 				and screen.X >= topLeft.X and screen.X <= topLeft.X + size.X
@@ -930,7 +941,7 @@ local function updateBoxSelect()
 	-- still-sellable plain ball in bf, same cleanup
 	-- dropHighlightIfUnsellable does for the ambient sellable highlight
 	for obj in pairs(boxHighlights) do
-		if obj.Parent ~= bf or obj:GetAttribute("PendingSell") or selling[obj] then
+		if obj.Parent ~= bf or obj:GetAttribute("PendingSell") or selling[obj] or not ClientBoard.canSell(obj) then
 			boxHighlights[obj]:Destroy()
 			boxHighlights[obj] = nil
 		end
@@ -955,23 +966,38 @@ local function finalizeBoxSelect()
 
 	if #targets == 0 then return end
 
-	local sumPos = Vector3.new()
-
+	-- Read before selling, because selling destroys them.
+	local info = {}
 	for _, ball in ipairs(targets) do
-		selling[ball] = true
-		removeSellableHighlight(ball)
-
-		local pos = ball.Position
-		sumPos += pos
-
-		sellFlash(pos, ball:GetAttribute("TargetSize") or ball.Size.X, HIGHLIGHT_COLOR)
+		info[ball] = { pos = ball.Position, size = ball:GetAttribute("TargetSize") or ball.Size.X }
 	end
 
-	localSellSound(sumPos / #targets)
-
 	-- One message for the whole selection, and the balls themselves go
-	-- immediately — same reasoning as the single sell above.
-	ClientBoard.sellBox(targets)
+	-- immediately — same reasoning as the single sell above. It hands
+	-- back which ones it actually sold, and only those get the flash and
+	-- the selling mark. Anything the board refused is left exactly as it
+	-- was: still on screen, still sellable a moment later.
+	--
+	-- This used to mark and flash every target first and ignore what the
+	-- board said, which is how an orb could end up permanently marked as
+	-- "being sold" while still sitting there — and never be sellable again.
+	local sold = ClientBoard.sellBox(targets)
+
+	local sumPos, count = Vector3.new(), 0
+	for _, ball in ipairs(targets) do
+		if sold[ball] then
+			selling[ball] = true
+			removeSellableHighlight(ball)
+			local i = info[ball]
+			sumPos += i.pos
+			count += 1
+			sellFlash(i.pos, i.size, HIGHLIGHT_COLOR)
+		end
+	end
+
+	if count > 0 then
+		localSellSound(sumPos / count)
+	end
 end
 
 RS.RenderStepped:Connect(updateBoxSelect)
@@ -1065,32 +1091,38 @@ UIS.InputBegan:Connect(function(input, processed)
 		-- that starts pulling (see MagnetFuse) while still sitting under
 		-- an unmoving mouse.
 		local ball = hovered
-		selling[ball] = true
+		-- Read off the ball while it still exists: the sell below
+		-- destroys it.
 		local pos = ball.Position
 		local size = ball:GetAttribute("TargetSize") or ball.Size.X
+		local flashColor = colorFor(ball)
+		local isBomb = ball.Name == bombT.Name
 
-		localSellSound(pos) -- instant — doesn't wait on the server round trip
-		if ball.Name == bombT.Name then
-			-- layered alongside the normal sell sound above, not instead
-			-- of it — mirrors SellService's own isBomb check next to its
-			-- matching fireExceptSeller call for everyone else
-			localSellSound(pos, DEFUSE_SND_ID, DEFUSE_VOL, DEFUSE_PITCH)
+		-- The board answers FIRST, and nothing is marked or played unless
+		-- it actually sold. This used to be the other way round, with the
+		-- answer ignored — so a refused sell left the ball on screen
+		-- marked in `selling`, which hover and box select both skip, and
+		-- it could never be sold again. See ClientBoard.canSell.
+		if ClientBoard.sell(ball) then
+			selling[ball] = true
+
+			localSellSound(pos) -- instant — doesn't wait on the server round trip
+			if isBomb then
+				-- layered alongside the normal sell sound above, not
+				-- instead of it
+				localSellSound(pos, DEFUSE_SND_ID, DEFUSE_VOL, DEFUSE_PITCH)
+			end
+			-- Nothing to predict any more: the ball is a part on this
+			-- machine, so the flash plays and it's simply gone. All the
+			-- hiding that used to live here — LocalTransparencyModifier,
+			-- Anchored, CanCollide, CanQuery, disabling the display —
+			-- existed because the real ball had to stick around another
+			-- 0.3s for everyone else's benefit. There is no everyone else
+			-- on this board.
+			clearHighlight()
+			removeSellableHighlight(ball)
+			sellFlash(pos, size, flashColor)
 		end
-		-- Nothing to predict any more: the ball is a part on this
-		-- machine, so the flash plays and then it's simply gone. All the
-		-- hiding that used to live here — LocalTransparencyModifier,
-		-- Anchored, CanCollide, CanQuery, disabling the display,
-		-- destroying the Highlight the server was about to replicate in
-		-- — existed because the real ball had to stick around another
-		-- 0.3s for everyone else's benefit. There is no everyone else on
-		-- this board.
-		clearHighlight()
-		removeSellableHighlight(ball)
-		sellFlash(pos, size, colorFor(ball))
-
-		-- Last, so the colour and size above are read off a ball that
-		-- still exists.
-		ClientBoard.sell(ball)
 
 	elseif input.UserInputType == Enum.UserInputType.MouseButton1 and sellMode and not player:GetAttribute("AFK") then
 		-- fell through the single-sell branch above — not currently

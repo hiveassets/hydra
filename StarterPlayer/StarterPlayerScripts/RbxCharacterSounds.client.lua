@@ -4,7 +4,7 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
-    Exported: 2026-09-22 18:28:59
+    Exported: 2026-09-23 00:26:24
 ]]
 -- Roblox character sound script
 

@@ -2,6 +2,12 @@
     ClientBoard (ModuleScript)
     Path: StarterPlayer → StarterPlayerScripts
     Parent: StarterPlayerScripts
+    Exported: 2026-09-23 00:26:23
+]]
+--[[
+    ClientBoard (ModuleScript)
+    Path: StarterPlayer → StarterPlayerScripts
+    Parent: StarterPlayerScripts
     Exported: 2026-09-22 18:28:58
 ]]
 --[[
@@ -72,6 +78,7 @@ local ClientBoard = {}
 local entries = {}                                     -- [id] = entry
 local byPart = setmetatable({}, { __mode = "k" })      -- [part] = entry
 local waiting = {}                                     -- entries whose launch time hasn't come yet
+local emergeSites = {}                                 -- [consumed orb's id] = where its results come out; see emergeAt
 local folder
 local collapsing = false
 local paused = false
@@ -231,6 +238,10 @@ local function requestResync(why)
 	return true
 end
 
+local function serverNow()
+	return Workspace:GetServerTimeNow()
+end
+
 function ClientBoard.idOf(part)
 	local entry = byPart[part]
 	return entry and entry.id
@@ -312,6 +323,12 @@ function ClientBoard.stashAbsorb(part)
 	if not entry or entry.selling or entry.stashing or collapsing or paused then
 		return nil
 	end
+	-- Already spoken for: an orb mid-way into a splitter, or a splitter
+	-- playing its send-off. The ledger has already dropped both, so a
+	-- stash would be a message about an orb that no longer exists.
+	if entry.claimed or entry.retiring then
+		return nil
+	end
 	-- Self-driven orbs are exempt from the state check, the same way they
 	-- are for selling. A magnet is never "settled" — it's off rising and
 	-- wandering under its own control — and requiring that state here is
@@ -343,7 +360,12 @@ function ClientBoard.stashAbsorb(part)
 	part.CanCollide = false
 	part.CanQuery = false -- so it can't be re-targeted mid-flight
 
-	local highlight = BoardEffects.fadeIn(part, Config.STASH_COLOR, Config.STASH_PULL_TIME)
+	-- Skipped for kinds whose own look shouldn't be painted over (see
+	-- LOOK's noHighlights); the pull and the flash on arrival still say
+	-- what happened.
+	local highlight = Config.highlightable(entry.kind)
+		and BoardEffects.fadeIn(part, Config.STASH_COLOR, Config.STASH_PULL_TIME)
+		or nil
 
 	task.spawn(function()
 		local elapsed = 0
@@ -374,7 +396,7 @@ function ClientBoard.stashAbsorb(part)
 		end
 
 		local arrivedAt = part.Parent and part.Position or startPos
-		if highlight.Parent then
+		if highlight and highlight.Parent then
 			highlight:Destroy()
 		end
 		forget(entry)
@@ -394,6 +416,154 @@ function ClientBoard.reportTrickShot()
 	send(ToServer.TRICK_SHOT)
 end
 
+-- ── absorbing ─────────────────────────────────────────────────────────
+-- A special pulling an orb into itself: a splitter today, a merger in
+-- step 4. The board owns this rather than the special, because the orb
+-- is the board's and has to leave cleanly whatever happens to the
+-- special that took it — a splitter can be stashed, spent or collapsed
+-- mid-pull, and the orb still has to finish going.
+
+-- Whether a special may take this orb right now, and if so its id and
+-- ledger size. Every condition here mirrors something the server will
+-- check when the report arrives, because a refusal after the orb has
+-- started converging costs a resync:
+--
+--   * a plain orb (radiant included), not a special
+--   * settled — not rising, not still growing in, not falling
+--   * old enough that Board.isLive will agree, by the server's clock plus
+--     a margin (LIVE_MARGIN). A ball settles about 0.27s after launch and
+--     the server's grace is 0.3s, so without this a splitter sitting in
+--     the pile would take orbs the server hasn't counted as landed yet.
+--   * not already claimed, held, being sold or being stashed
+--   * past its immunity, if it has just emerged from something
+local function absorbable(part)
+	local entry = byPart[part]
+	if not entry or entry.kind ~= "ball" or entry.state ~= "settled" then
+		return nil
+	end
+	if entry.claimed or entry.held or entry.selling or entry.stashing or entry.retiring then
+		return nil
+	end
+	if part:GetAttribute("Held") then
+		return nil
+	end
+	if entry.immuneUntil and os.clock() < entry.immuneUntil then
+		return nil
+	end
+	if serverNow() < entry.launchAt + Config.LAUNCH_TO_LIVE + Config.LIVE_MARGIN then
+		return nil
+	end
+	return entry.id, entry.size
+end
+
+-- Claims the orb and pulls it into `target` over `duration`, shrinking it
+-- to nothing, then removes it from the board. Returns its id, or nil if
+-- it can't be taken. The claim is synchronous, so nothing else — another
+-- splitter, the next frame of this one, a sell click — can take the same
+-- orb once this has returned.
+--
+-- `pendingAttribute` goes on the part for scripts that ask the part
+-- rather than the board (StashClient checks SplitPending/MergePending).
+--
+-- The target is a POSITION, captured by the caller when it acted — not
+-- the special's part. Nothing here depends on the special still existing.
+local function absorb(part, target, duration, pendingAttribute)
+	local entry = byPart[part]
+	if not entry or entry.claimed then
+		return nil
+	end
+	entry.claimed = true
+	if pendingAttribute then
+		part:SetAttribute(pendingAttribute, true)
+	end
+
+	-- Anchored so the pull reads cleanly rather than fighting gravity and
+	-- momentum; off the raycast so it can't be grabbed, sold or stashed
+	-- mid-pull.
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanQuery = false
+
+	local startPos = part.Position
+	local startSize = part.Size.X
+
+	task.spawn(function()
+		local elapsed = 0
+		while elapsed < duration do
+			local dt = RunService.Heartbeat:Wait()
+			-- Removed by something else — a server REMOVE, a resync. Its
+			-- remover has already dealt with it.
+			if entries[entry.id] ~= entry or not part.Parent then
+				return
+			end
+			-- Frozen where it is: the wipe takes it with everything else.
+			if collapsing then
+				return
+			end
+			elapsed += dt
+
+			local alpha = math.clamp(elapsed / duration, 0, 1)
+			local move = TweenService:GetValue(alpha, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
+			local shrink = TweenService:GetValue(alpha, Enum.EasingStyle.Exponential, Enum.EasingDirection.In)
+			local size = startSize * (1 - shrink)
+			part.Size = Vector3.new(size, size, size)
+			part.CFrame = CFrame.new(startPos:Lerp(target, move))
+		end
+
+		if entries[entry.id] == entry then
+			forget(entry)
+		end
+	end)
+
+	return entry.id
+end
+
+-- ── emerging ──────────────────────────────────────────────────────────
+-- Where the results of an absorb come out. The special writes this down
+-- at the moment it acts, keyed by the consumed orb's id, and the server's
+-- SPAWN names that same id back as `emergeFrom`.
+--
+-- This is the lesson of the first attempt at this step: that version had
+-- the server name the SPECIAL and the client look up its live part when
+-- the results launched, which meant keeping the splitter alive and
+-- waiting on it, and a pile of machinery for when it wasn't. The client
+-- already knows exactly where the splitter was when it acted — it's
+-- holding that position when it reports. So it keeps it, and nothing
+-- about the results depends on the splitter any more.
+--
+-- `delay` is how long the results are held back: the length of the
+-- convergence, so they appear as the orb lands and not before.
+local function emergeAt(sourceId, position, count, delay)
+	local site = {
+		position = position,
+		readyAt = serverNow() + (delay or 0),
+		count = math.max(count or 1, 1),
+		used = 0,
+		angle = rand() * math.pi * 2,
+	}
+	emergeSites[sourceId] = site
+
+	-- A refused split never sends its halves, so its site would sit here
+	-- forever. Harmless, but not free.
+	task.delay(Config.EMERGE.SITE_TIMEOUT, function()
+		if emergeSites[sourceId] == site then
+			emergeSites[sourceId] = nil
+		end
+	end)
+end
+
+-- Where a growing result's centre sits: on the point it emerged from,
+-- raised only when that would put its own bottom under the platform. A
+-- part grown by tweening Size expands around a fixed centre, so a result
+-- centred on a small splitter would otherwise spend its grow half-sunk
+-- into the floor and get fired off it by the solver when it went live.
+-- Recomputed per frame against the CURRENT size, so a big result starts
+-- centred and eases up onto the floor as it grows. Straight from
+-- BallManager's resultCenterY.
+local function resultCenterY(centerY, currentSize)
+	return math.max(centerY, Config.COL_Y + currentSize / 2)
+end
+
 -- ── behaviours ────────────────────────────────────────────────────────
 -- A special's behaviour is a ModuleScript in ReplicatedStorage →
 -- Behaviours, named after the kind's template (Bomb, Magnet, ...), with
@@ -404,8 +574,9 @@ end
 -- the part, dying with it, and reaching BallManager through _G.
 --
 -- Nothing here knows what any particular special does. Adding one in a
--- later step is a module plus a weight in SPECIAL_WEIGHTS, and no
--- change to this file at all.
+-- later step is a module plus a weight in SPECIAL_WEIGHTS — or, for one
+-- that consumes other orbs, a module plus the absorb/emerge pair the
+-- splitter introduced, which the merger will share.
 
 local behaviourCache = {} -- [kind] = module, or false for "there isn't one"
 
@@ -511,6 +682,35 @@ local function startBehaviour(entry)
 			local otherEntry = byPart[other]
 			return otherEntry and otherEntry.kind or nil
 		end,
+
+		-- Whether the board is running at all. A special that acts on
+		-- other orbs stops acting the moment this goes false — an AFK
+		-- pause or a collapse — though it can keep pulsing.
+		running = function()
+			return not paused and not collapsing
+		end,
+
+		-- Whether this orb has landed on the platform in the board's own
+		-- terms (risen past COL_Y and finished growing in) and is old
+		-- enough that the server will agree it's live. A splitter doesn't
+		-- split before this.
+		live = function()
+			return entry.state == "settled"
+				and serverNow() >= entry.launchAt + Config.LAUNCH_TO_LIVE + Config.LIVE_MARGIN
+		end,
+
+		-- See absorbable / absorb / emergeAt above.
+		absorbable = absorbable,
+		absorb = absorb,
+		emergeAt = emergeAt,
+
+		-- This orb is on its way out under its own power — a splitter
+		-- playing its send-off after the ledger has already let it go.
+		-- Nothing can sell, stash or grab it from here.
+		retire = function()
+			entry.retiring = true
+			part.CanQuery = false
+		end,
 	}
 
 	task.spawn(function()
@@ -580,12 +780,28 @@ local function launch(entry)
 	-- the platform and switch its collision back on underneath it.
 	local selfDriven = (look and look.selfDriven) == true
 
+	-- An orb emerging from another orb (a split half) starts at nothing
+	-- where the special was standing, and grows and hops outward from
+	-- there — see stepEmerge. Anchored and solid against the platform for
+	-- the whole grow, but in SplitGrowing, so it passes through the orbs
+	-- it was born in the middle of, its sibling included.
+	local emerge = entry.emerge
+
 	local part = templateFor(entry.kind):Clone()
-	part.Anchored = selfDriven
-	part.CollisionGroup = CG.Balls
-	part.CanCollide = false -- comes back at COL_Y, see the heartbeat
-	part.Size = Vector3.new(visual, visual, visual)
-	part.CFrame = CFrame.new(Config.SPAWN_POS)
+	if emerge then
+		part.Anchored = true
+		part.CollisionGroup = CG.SplitGrowing
+		part.CanCollide = true
+		part.CanQuery = false -- can't be grabbed, sold or stashed until it's a real orb
+		part.Size = Vector3.new(0, 0, 0)
+		part.CFrame = CFrame.new(emerge.position.X, resultCenterY(emerge.position.Y, 0), emerge.position.Z)
+	else
+		part.Anchored = selfDriven
+		part.CollisionGroup = CG.Balls
+		part.CanCollide = false -- comes back at COL_Y, see the heartbeat
+		part.Size = Vector3.new(visual, visual, visual)
+		part.CFrame = CFrame.new(Config.SPAWN_POS)
+	end
 
 	-- Only for kinds that are meant to be a random colour. A bomb or a
 	-- magnet is recognised by its own colour scheme, and painting the
@@ -624,7 +840,21 @@ local function launch(entry)
 	)
 
 	part.Parent = folder
-	if not selfDriven then
+	if emerge then
+		-- The hop is simulated by hand while the orb is anchored for its
+		-- grow, then handed to real physics as a velocity. Its outward
+		-- speed is random but floored, so two halves given opposite
+		-- directions always clear each other's radius by touchdown —
+		-- unfloored, a roll near 0 left them overlapping when they went
+		-- solid, and the solver fired them both off the platform.
+		local cfg = Config.EMERGE
+		local flight = 2 * cfg.POP_UP_SPEED / Workspace.Gravity
+		local minSpeed = (size / 2 + 1) / flight
+		local speed = math.max(minSpeed, rand() * cfg.POP_H_SPEED)
+		emerge.hop = emerge.dir * speed
+		emerge.flight = flight
+		emerge.startedAt = os.clock()
+	elseif not selfDriven then
 		part.AssemblyLinearVelocity = Rules.launchVelocity(size, Workspace.Gravity, rand, baseSize)
 	end
 
@@ -633,9 +863,14 @@ local function launch(entry)
 	-- "driven" is its own state rather than a lie about being settled, so
 	-- anything that tests the state gets an honest answer. Selling knows
 	-- about it; grabbing deliberately doesn't, which is what keeps a
-	-- magnet from being picked up mid-flight.
-	entry.state = selfDriven and "driven" or "ascending"
-	entry.grown = false
+	-- magnet from being picked up mid-flight. "emerging" is the same
+	-- idea for a split half that hasn't finished growing in.
+	if emerge then
+		entry.state = "emerging"
+	else
+		entry.state = selfDriven and "driven" or "ascending"
+	end
+	entry.grown = emerge ~= nil -- an emerging orb does its own grow
 	entry.behavioursAlive = true
 	byPart[part] = entry
 
@@ -650,6 +885,13 @@ local function launch(entry)
 		startBehaviour(entry)
 	end
 
+	-- A result is silent: the special that made it already played its
+	-- own sound, and the old BallManager skipped the spawn cue for these
+	-- for the same reason.
+	if emerge then
+		return
+	end
+
 	-- The spawn cue comes from the map's fixed spawn symbol rather than
 	-- the ball, so a burst of launches doesn't smear across the floor.
 	local special = entry.kind ~= "ball" or entry.radiant
@@ -662,9 +904,12 @@ local function launch(entry)
 	-- it launches as a solid cyan shape and resolves into its real
 	-- colour as it rises. Everything else about it — the arc, the
 	-- stagger, the grow — is an ordinary spawn, deliberately.
+	-- The flash at the spawn point still plays for every kind; only the
+	-- glow over the orb itself is skipped where LOOK says so.
 	if entry.stashed then
 		BoardEffects.flash(part.Position, Config.STASH_FLASH_SIZE, Config.STASH_COLOR, true)
-
+	end
+	if entry.stashed and Config.highlightable(entry.kind) then
 		local glow = Instance.new("Highlight")
 		glow.FillColor = Config.STASH_COLOR
 		glow.FillTransparency = 0 -- opaque to start; the fade is what reveals the orb
@@ -697,6 +942,27 @@ local function addSpawnEntries(list)
 				stashed = data.stashed,
 				state = "queued",
 			}
+
+			-- Growing out of an orb this client consumed. Looked up by
+			-- the consumed orb's id in what the special wrote down when it
+			-- acted (see emergeAt). If it isn't there — a resync, or a
+			-- site that timed out — the orb simply launches normally,
+			-- which is still an orb on the board.
+			local site = data.emergeFrom and emergeSites[data.emergeFrom]
+			if site then
+				site.used += 1
+				local count = math.max(data.emergeCount or site.count, 1)
+				local angle = site.angle + (site.used - 1) * (math.pi * 2 / count)
+				entry.emerge = {
+					position = site.position,
+					readyAt = site.readyAt,
+					dir = Vector3.new(math.cos(angle), 0, math.sin(angle)),
+				}
+				if site.used >= count then
+					emergeSites[data.emergeFrom] = nil
+				end
+			end
+
 			entries[entry.id] = entry
 			table.insert(waiting, entry)
 		end
@@ -723,11 +989,23 @@ local function stepLaunches()
 
 	local t = Workspace:GetServerTimeNow()
 	local launched = 0
-	while #waiting > 0 and waiting[1].launchAt <= t do
-		local entry = table.remove(waiting, 1)
-		if entries[entry.id] then -- still ours; a collapse may have dropped it
-			launch(entry)
-			launched += 1
+	local index = 1
+	while index <= #waiting do
+		local entry = waiting[index]
+		if entry.launchAt > t then
+			break -- sorted by stamp, so nothing after this is due either
+		end
+		if entry.emerge and entry.emerge.readyAt > t then
+			-- Due by the server's stamp, but the orb it's coming out of is
+			-- still converging. Stepped over rather than waited on, so a
+			-- held half never holds up the ordinary launches behind it.
+			index += 1
+		else
+			table.remove(waiting, index)
+			if entries[entry.id] then -- still ours; a collapse may have dropped it
+				launch(entry)
+				launched += 1
+			end
 		end
 	end
 
@@ -811,6 +1089,75 @@ local function voidExit(entry)
 	task.delay(Config.VOID_EXIT_TIME, forget, entry)
 end
 
+-- One frame of an emerging orb: grow from nothing while hopping outward
+-- on a hand-simulated arc, then hand over to real physics with the arc's
+-- velocity. The numbers are BallManager's spawnSplitResult's — the same
+-- 0.6s Quad-out grow, the same v0·t − ½gt² hop — but unlike the original
+-- it never stops moving outward: it lands and rolls on rather than
+-- dying on the spot.
+--
+-- Driven from the board's own heartbeat rather than a tween plus a
+-- property listener, which is what the original had to do and why it
+-- needed a watchdog for the tween that never completed.
+local function stepEmerge(entry, part)
+	local emerge = entry.emerge
+	local cfg = Config.EMERGE
+	local gravity = Workspace.Gravity
+
+	local elapsed = os.clock() - emerge.startedAt
+	local growAlpha = math.clamp(elapsed / Config.GROW_TIME, 0, 1)
+	local size = entry.size * TweenService:GetValue(growAlpha, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+	-- Only the vertical arc stops at touchdown. The outward travel keeps
+	-- going the whole time — the original clamped both, which is why a
+	-- half that landed a frame before it finished growing sat dead still.
+	local arcT = math.min(elapsed, emerge.flight)
+	local hopY = math.max(cfg.POP_UP_SPEED * arcT - 0.5 * gravity * arcT * arcT, 0)
+	local origin = emerge.position
+
+	part.Size = Vector3.new(size, size, size)
+	part.CFrame = CFrame.new(
+		origin.X + emerge.hop.X * elapsed,
+		resultCenterY(origin.Y, size) + hopY,
+		origin.Z + emerge.hop.Z * elapsed
+	)
+
+	if growAlpha < 1 then
+		return
+	end
+
+	-- Fully grown: a real orb from here on, settled already — it's on the
+	-- platform and it's never going to rise past COL_Y the way a launched
+	-- one does.
+	part.Anchored = false
+	part.CollisionGroup = CG.Balls
+	part.CanQuery = true
+
+	-- Handed over still moving outward, whether it's landed yet or not,
+	-- so it rolls on in the direction the splitter threw it and friction
+	-- slows it down from there. Vertical speed only if it's still in the
+	-- air; once it's down, driving it into the floor would just bounce it.
+	local vy = 0
+	if elapsed < emerge.flight and hopY > 0.05 then
+		vy = cfg.POP_UP_SPEED - gravity * elapsed
+	end
+	part.AssemblyLinearVelocity = Vector3.new(emerge.hop.X, vy, emerge.hop.Z)
+
+	-- ...and spun to match, as if it were already rolling. A sphere
+	-- that's sliding without spinning has its speed eaten by friction in
+	-- a few frames, which reads as stopping dead. Rolling without
+	-- slipping means ω = (up × v) / r.
+	local radius = math.max(entry.size / 2, 0.05)
+	part.AssemblyAngularVelocity = Vector3.new(0, 1, 0):Cross(Vector3.new(emerge.hop.X, 0, emerge.hop.Z)) / radius
+
+	entry.state = "settled"
+	entry.reachedColY = true
+	-- Born inside the reach of the splitter that made it, so it gets a
+	-- moment to roll clear before anything can take it again.
+	entry.immuneUntil = emerge.startedAt + cfg.IMMUNITY
+	entry.emerge = nil
+end
+
 local function stepBall(entry)
 	local part = entry.part
 	if not part or not part.Parent or paused then
@@ -821,6 +1168,22 @@ local function stepBall(entry)
 	-- fall. Everything below assumes an orb thrown up onto the platform,
 	-- and none of it is true for a magnet holding station in mid-air.
 	if entry.selfDriven then
+		return
+	end
+
+	-- Being pulled into a splitter or the player's pocket: anchored, and
+	-- whatever is pulling it owns its position until it's gone. Neither is
+	-- a fall, whatever height it passes through on the way.
+	if entry.claimed or entry.stashing then
+		return
+	end
+
+	if entry.state == "emerging" then
+		-- A collapse froze it where it stood; finishing the grow would
+		-- unanchor it in the middle of the wipe.
+		if not collapsing then
+			stepEmerge(entry, part)
+		end
 		return
 	end
 
@@ -905,22 +1268,55 @@ end
 
 -- ── selling ───────────────────────────────────────────────────────────
 
--- Called by SellClient once it has decided a click was a real sell.
--- The ball goes immediately; SellClient plays its own flash and sound
--- (it has always done both locally), and the server settles the money.
-function ClientBoard.sell(part)
-	local entry = byPart[part]
+-- THE ONE ANSWER TO "CAN THIS BE SOLD RIGHT NOW?"
+--
+-- As far as the board is concerned — SellClient still owns the upgrade
+-- side (defuser, degausser, a magnet that's started pulling). Both sell
+-- paths below use this, and SellClient asks it BEFORE it marks an orb as
+-- selling or plays anything.
+--
+-- That order is the fix for an orb that became permanently unsellable.
+-- SellClient used to mark the orb, play the flash, and only then ask the
+-- board, without looking at the answer. When the board said no — a split
+-- half still growing in, an orb being pulled into a splitter — the orb
+-- stayed on screen marked "already being sold", and SellClient skips
+-- those for hover and box select alike, forever. A marquee over a busy
+-- splitter is where it happened: it scoops up everything on screen.
+local function canSell(entry)
 	if not entry or entry.selling or collapsing or paused then
 		return false
 	end
-	if not entry.selfDriven and entry.state ~= "settled" and entry.state ~= "ascending" then
-		-- already on its way off the edge: the server forgot it the
-		-- moment the fall was reported, so selling it would be a message
-		-- about a ball that no longer exists
-		--
-		-- A self-driven orb is exempt: a magnet is sellable through the
-		-- degausser for its whole rise and wander, and what closes that
-		-- window is its own Pulling attribute, which SellClient checks.
+	if entry.claimed or entry.retiring then
+		-- mid-way into a splitter, or a splitter playing its send-off:
+		-- the ledger dropped it the moment the split was reported, so
+		-- there's nothing left to sell
+		return false
+	end
+	if entry.selfDriven then
+		-- A magnet is sellable through the degausser for its whole rise
+		-- and wander; what closes that window is its own Pulling
+		-- attribute, which SellClient checks.
+		return true
+	end
+	-- Anything visibly on the board. "emerging" is a split half still
+	-- growing in: it's on the server's ledger from the moment it appears,
+	-- and a click on it is as legitimate as a click on an orb mid-rise
+	-- (see Board.isOnBoard). What's left out is "queued" (not here yet)
+	-- and "falling" (already reported, so the server forgot it).
+	return entry.state == "settled" or entry.state == "ascending" or entry.state == "emerging"
+end
+
+function ClientBoard.canSell(part)
+	return canSell(byPart[part])
+end
+
+-- Called by SellClient once it has decided a click was a real sell.
+-- Returns whether it actually sold; SellClient only plays the flash and
+-- sound when it did. The ball goes immediately and the server settles
+-- the money.
+function ClientBoard.sell(part)
+	local entry = byPart[part]
+	if not canSell(entry) then
 		return false
 	end
 	entry.selling = true
@@ -931,37 +1327,27 @@ end
 
 -- The box-select counterpart: one message for the whole selection, so a
 -- big drag is one round trip rather than thirty.
+--
+-- Returns the parts it actually sold, keyed by part, so SellClient
+-- flashes exactly those and leaves the rest alone. Everything is checked
+-- with the same canSell the single sell uses: a marquee selects by where
+-- things are on screen and doesn't care what's falling, being pulled
+-- into a splitter, or anything else.
 function ClientBoard.sellBox(parts)
-	local ids = {}
+	local ids, sold = {}, {}
 	for _, part in ipairs(parts) do
 		local entry = byPart[part]
-		-- Same state check the single sell does, and for the same
-		-- reason: an orb already on its way off the edge was reported as
-		-- fallen the moment it crossed, and the server forgot it right
-		-- then. Selling it is a message about an orb that no longer
-		-- exists.
-		--
-		-- This was missing here, and a marquee doesn't care what's
-		-- falling — it selects by where things are on screen. On a busy
-		-- board a drag would routinely scoop up an orb mid-fall, which
-		-- is why a bulk sell so often ended in the whole board rebuilding
-		-- itself.
-		if entry
-			and not entry.selling
-			and not collapsing
-			and not paused
-			and (entry.state == "settled" or entry.state == "ascending")
-		then
+		if canSell(entry) then
 			entry.selling = true
 			table.insert(ids, entry.id)
+			sold[part] = true
 			forget(entry)
 		end
 	end
-	if #ids == 0 then
-		return false
+	if #ids > 0 then
+		send(ToServer.SELL_BOX, ids)
 	end
-	send(ToServer.SELL_BOX, ids)
-	return true
+	return sold
 end
 
 -- ── removals the server asks for ─────────────────────────────────────
@@ -1191,6 +1577,12 @@ local function setPaused(value)
 		if delta > 0 then
 			for _, entry in ipairs(waiting) do
 				entry.launchAt += delta
+				if entry.emerge then
+					entry.emerge.readyAt += delta
+				end
+			end
+			for _, site in pairs(emergeSites) do
+				site.readyAt += delta
 			end
 		end
 	end
@@ -1198,7 +1590,21 @@ local function setPaused(value)
 	for _, entry in pairs(entries) do
 		local part = entry.part
 		if part and part.Parent then
-			part.Anchored = paused
+			if paused then
+				part.Anchored = true
+			else
+				-- Back to whatever it was before, not blanket unanchored.
+				-- Some orbs are anchored on purpose — a magnet holds
+				-- station under its own control, a split half is pinned
+				-- for its grow, an orb being pulled into a splitter is
+				-- being moved by hand — and unanchoring any of those
+				-- dropped it out of the air.
+				part.Anchored = entry.selfDriven == true
+					or entry.state == "emerging"
+					or entry.claimed == true
+					or entry.stashing == true
+					or entry.retiring == true -- a spent splitter, pinned for its send-off
+			end
 		end
 	end
 end
@@ -1223,6 +1629,7 @@ local function onServerMessage(op, a, b)
 			forget(entry)
 		end
 		table.clear(waiting)
+		table.clear(emergeSites)
 		entries = {}
 		syncQueueCount()
 

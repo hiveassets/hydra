@@ -2,6 +2,12 @@
     BoardService (ModuleScript)
     Path: ServerScriptService
     Parent: ServerScriptService
+    Exported: 2026-09-23 00:26:21
+]]
+--[[
+    BoardService (ModuleScript)
+    Path: ServerScriptService
+    Parent: ServerScriptService
     Exported: 2026-09-22 18:28:56
 ]]
 --[[
@@ -257,6 +263,30 @@ handlers[ToServer.SELL_BOX] = function(player, board, ids)
 			ok and "part of that selection didn't sell" or tostring(reason),
 			stranded
 			))
+	end
+end
+
+-- Not gated on AFK, unlike selling. A split is something the board did,
+-- not something the player clicked, and one reported a moment before the
+-- pause landed has already played out on screen (see Board.onSplit).
+--
+-- A refusal repairs itself like every other one, but it has to pick the
+-- right id to hand to reject(), because that's what decides whether the
+-- board gets rebuilt. The orb first: if the ledger still holds it, the
+-- client has pulled in an orb that's still counted here — the phase 2b
+-- softlock shape. If the orb's already gone (the cap auto-sold it in the
+-- same instant, say), both sides agree about the orb, but the client has
+-- spent a use of a splitter this side didn't charge, so the splitter is
+-- the divergence. If neither is here, there's nothing to repair.
+handlers[ToServer.SPLIT] = function(_player, board, splitterId, ballId)
+	local ok, reason = board:onSplit(splitterId, ballId)
+	if ok then
+		return
+	end
+	if board:entry(ballId) then
+		board:reject(ballId, reason)
+	elseif board:entry(splitterId) then
+		board:reject(splitterId, reason)
 	end
 end
 

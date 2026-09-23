@@ -5,6 +5,15 @@
     Properties:
         Disabled: false
         RunContext: Enum.RunContext.Legacy
+    Exported: 2026-09-23 00:26:23
+]]
+--[[
+    SplitterFuse (Script)
+    Path: ReplicatedStorage → Splitter
+    Parent: Splitter
+    Properties:
+        Disabled: false
+        RunContext: Enum.RunContext.Legacy
     Exported: 2026-09-22 18:28:57
 ]]
 --[[

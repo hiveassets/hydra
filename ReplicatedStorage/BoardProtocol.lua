@@ -2,6 +2,12 @@
     BoardProtocol (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
+    Exported: 2026-09-23 00:26:23
+]]
+--[[
+    BoardProtocol (ModuleScript)
+    Path: ReplicatedStorage
+    Parent: ReplicatedStorage
     Exported: 2026-09-22 18:28:58
 ]]
 --[[
@@ -72,6 +78,12 @@ BoardProtocol.ToServer = {
 	-- () the player threw a ball from the middle pad and it cleared the
 	-- platform without touching anything. Worth a badge, nothing else.
 	TRICK_SHOT = "trickShot",
+	-- (splitterId, ballId) this splitter touched this orb and has already
+	-- started pulling it in. Two ids and nothing else: not the halves,
+	-- not their sizes, not what the splitter shrinks to. The server works
+	-- all of that out from its own ledger and sends the halves back as an
+	-- ordinary SPAWN.
+	SPLIT = "split",
 }
 
 -- ── server to client ──────────────────────────────────────────────────
@@ -81,6 +93,19 @@ BoardProtocol.ToClient = {
 	-- workspace:GetServerTimeNow() timestamp — the client holds it until
 	-- then, so the stagger between launches is identical on every
 	-- machine without the server having to send one message per launch.
+	--
+	-- Two optional fields, for an orb that grows out of another orb
+	-- rather than launching from the spawn point (a split's halves):
+	--   emergeFrom   the id of the orb that was consumed to make it — an
+	--                id the CLIENT named in its own report, so it's always
+	--                one the client already knows about
+	--   emergeCount  how many results share that source (2 for a split),
+	--                so the client can spread their hop directions evenly
+	-- The server never sends a position. It has never known where
+	-- anything is; the client recorded where the special was standing at
+	-- the moment it acted, and looks that up by emergeFrom. An entry
+	-- whose emergeFrom the client doesn't recognise (a resync, say) just
+	-- launches normally.
 	SPAWN = "spawn",
 	-- (id, reason) the ledger says this ball is gone. reason is one of
 	-- "autoSell", "collapse", "adminClear".

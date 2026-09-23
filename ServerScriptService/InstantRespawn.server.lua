@@ -5,7 +5,16 @@
     Properties:
         Disabled: false
         RunContext: Enum.RunContext.Legacy
-    Exported: 2026-09-22 18:28:56
+    Exported: 2026-09-23 00:26:21
+]]
+--[[
+    InstantRespawn (Script)
+    Path: ServerScriptService
+    Parent: ServerScriptService
+    Properties:
+        Disabled: false
+        RunContext: Enum.RunContext.Legacy
+    Exported: 2026-09-22 20:42:24
 ]]
 game.Players.RespawnTime = 0
 

@@ -2,6 +2,12 @@
     BoardConfig (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
+    Exported: 2026-09-23 00:26:23
+]]
+--[[
+    BoardConfig (ModuleScript)
+    Path: ReplicatedStorage
+    Parent: ReplicatedStorage
     Exported: 2026-09-22 18:28:58
 ]]
 --[[
@@ -135,7 +141,7 @@ BoardConfig.SPECIAL_MIN_BALLS = 2       -- board must already have this many bal
 --
 --   bomb      5      ← step 1, live
 --   magnet    3      ← step 2, live
---   splitter  2      ← step 3
+--   splitter  2      ← step 3, live
 --   merger    1      ← step 4
 --   mimic     0.05   ← step 5
 --
@@ -146,7 +152,7 @@ BoardConfig.SPECIAL_WEIGHTS = {
 	bomb = 5,
 	magnet = 3,
 	mimic = 0,
-	splitter = 0,
+	splitter = 2,
 	merger = 0,
 }
 
@@ -186,14 +192,30 @@ BoardConfig.SPECIAL_WEIGHTS = {
 --                then holds position under its own control, and would be
 --                fought the whole way by a step loop trying to settle it
 --                onto the platform and switch its collision back on.
+--   noHighlights true if the board never lays a Highlight over it: not
+--                the bomb's red hit flash, not the cyan stash pull, not
+--                the cyan glow it comes back out of the stash in. A
+--                splitter or merger is recognisable by its own pulse, and
+--                a fill colour over the top of it drowns that out. It's
+--                a tool on the board rather than something things happen
+--                TO. (The collapse's magenta is left alone: that's the
+--                whole board going, and everything should read the same.)
 BoardConfig.LOOK = {
 	ball     = { template = "Ball",     ledgerColor = true,  showsSize = true,  selfDriven = false },
 	bomb     = { template = "Bomb",     ledgerColor = false, showsSize = false, selfDriven = false },
 	magnet   = { template = "Magnet",   ledgerColor = false, showsSize = false, selfDriven = true },
 	mimic    = { template = "Mimic",    ledgerColor = true,  showsSize = true,  selfDriven = false },
-	splitter = { template = "Splitter", ledgerColor = false, showsSize = false, selfDriven = false },
-	merger   = { template = "Merger",   ledgerColor = false, showsSize = false, selfDriven = false },
+	splitter = { template = "Splitter", ledgerColor = false, showsSize = false, selfDriven = false, noHighlights = true },
+	merger   = { template = "Merger",   ledgerColor = false, showsSize = false, selfDriven = false, noHighlights = true },
 }
+
+-- Whether the board may lay a Highlight over an orb of this kind. The one
+-- place that question is answered, so the bomb, the stash and anything
+-- later all agree.
+function BoardConfig.highlightable(kind)
+	local look = kind and BoardConfig.LOOK[kind]
+	return not (look and look.noHighlights)
+end
 
 -- ── bomb ──────────────────────────────────────────────────────────────
 -- Every number here came straight off BombFuse; nothing is retuned.
@@ -247,14 +269,8 @@ BoardConfig.BOMB = {
 	HIT_COLOR = Color3.fromRGB(255, 0, 0),
 	HIT_FADE_TIME = 0.5,
 
-	-- Kinds that take the push but not the flash. A splitter or a merger
-	-- is a tool sitting on the board rather than something the blast
-	-- happened TO, and marking it as damaged reads as a state change it
-	-- hasn't had.
-	HIT_FLASH_EXCLUDES = {
-		splitter = true,
-		merger = true,
-	},
+	-- Which kinds take the push but not the flash is LOOK's noHighlights
+	-- (see BoardConfig.highlightable), shared with the stash's highlights.
 
 	-- ── screen shake ──────────────────────────────────────────────────
 	-- Amplitude is roughly the peak camera offset in studs, scaled by
@@ -348,6 +364,93 @@ BoardConfig.MAGNET = {
 	SHINE_YELLOW = Color3.new(1, 1, 0),
 	SHINE_WHITE = Color3.new(1, 1, 1),
 	FLASH_IMAGE = "rbxassetid://131187911056182", -- the bomb's flash image, reused
+}
+
+-- ── splitter ──────────────────────────────────────────────────────────
+-- Every number lifted from SplitterFuse unchanged. A splitter launches
+-- and settles like any orb, wakes as it crosses COL_Y, then pulls any
+-- plain orb it touches into itself and splits it in two, shrinking a
+-- little with every split until it uses itself up.
+--
+-- Both sides read SHRINK_PER_SPLIT and FLOOR: the client to animate the
+-- shrink and know when to play the send-off, the server to spend the
+-- budget. The server's copy is the one that counts.
+BoardConfig.SPLITTER = {
+	-- dormant → awake: the wake is the COL_Y crossing, same as a ball
+	-- regaining collision; splitting also waits for it to be at rest
+	-- (see GROUNDED_VY) and for the board to call it settled.
+	DEFAULT_COLOR = Color3.fromRGB(152, 0, 255),
+	PULSE_COLOR = Color3.fromRGB(255, 0, 255),
+	PULSE_TIME = 3, -- one pop-and-decay cycle of the saw-wave pulse
+
+	-- the budget
+	SHRINK_PER_SPLIT = 2,
+	FLOOR = 5,         -- the split whose shrink would land at or below this spends the splitter
+	SHRINK_TIME = 0.15, -- the small ease down after each split, and the final ease to FLOOR
+	COOLDOWN = 0.1,     -- at most one split per this long, and one per frame
+
+	-- An orb bigger than this can be split. A 3 is the floor and is
+	-- ignored completely — no pull, no cooldown, no shrink.
+	MIN_SPLIT_SIZE = 3,
+
+	-- Vertical speed that still counts as "at rest", held for this many
+	-- frames in a row AND at least this long. The wake happens on the way
+	-- UP through the platform at ~66 studs/s, right inside the settled
+	-- pile, and without this it would split whatever it came up under
+	-- before it had landed.
+	--
+	-- Both, because this runs at the player's framerate now, not the
+	-- server's fixed 60. The apex of an arc spends about 0.015s under
+	-- GROUNDED_VY whatever the framerate: at 240fps that's several frames
+	-- (so a frame count alone passes mid-air), and at 20fps a single
+	-- frame covers more than that (so a time alone could pass on one
+	-- lucky sample). Two frames spanning 1/30s rules out the apex at any
+	-- framerate, and something actually resting passes within a few
+	-- hundredths of a second.
+	GROUNDED_VY = 1.5,
+	GROUNDED_FRAMES = 2,
+	GROUNDED_TIME = 1 / 30,
+
+	-- The touched orb converges into the splitter's centre, shrinking to
+	-- nothing, and the halves appear as it lands. The halves' spawn is
+	-- held on the client until this has played out, which is what hides
+	-- the round trip.
+	CONVERGE_TIME = 0.3,
+
+	-- the send-off, once the budget is spent
+	VANISH_TIME = 1,
+	VANISH_FLASH_COLOR = Color3.fromRGB(255, 0, 255),
+	VANISH_FLASH_START = Color3.new(0, 0, 0),
+	VANISH_FLASH_SCALE = 2,
+
+	-- a gentle horizontal pull back toward (0, 0) while awake, stronger
+	-- the further out it drifts
+	CENTER_PULL_RADIUS = 50,
+	CENTER_PULL_MIN_ACCEL = 2,
+	CENTER_PULL_MAX_ACCEL = 5,
+}
+
+-- ── emerging results ──────────────────────────────────────────────────
+-- An orb that comes out of another orb instead of the spawn point: the
+-- two halves of a split today, a merge result in step 4. Lifted from
+-- BallManager's spawnSplitResult, which is in the first export after
+-- all (commit dbc3713).
+--
+-- It grows from nothing at the place the special was standing WHEN IT
+-- ACTED, hopping outward on a hand-simulated arc while it grows, then is
+-- handed to ordinary physics with the arc's velocity so the hop carries
+-- on seamlessly. Anchored and non-colliding with other orbs until then.
+BoardConfig.EMERGE = {
+	POP_UP_SPEED = 60, -- studs/s upward at the start of the hop
+	POP_H_SPEED = 20,  -- max random outward speed; floored so siblings always clear each other
+
+	-- A freshly emerged orb can't be absorbed again for this long. It's
+	-- born inside the reach of whatever made it.
+	IMMUNITY = 0.75,
+
+	-- A split whose answer never came back (it was refused) leaves its
+	-- emerge site behind; this is how long before it's thrown away.
+	SITE_TIMEOUT = 10,
 }
 
 -- ── radiant ───────────────────────────────────────────────────────────
@@ -469,6 +572,15 @@ BoardConfig.MIN_TIME_BEFORE_FALL = 0.25
 -- different questions for two different kinds of event.
 BoardConfig.LAUNCH_TO_LIVE = 0.3
 
+-- The client's own copy of that check, for events it starts itself (a
+-- splitter absorbing an orb), adds this on top. The server checks when
+-- the message ARRIVES, which is always later than when the client
+-- decided, so this only has to cover the error in the client's estimate
+-- of server time. Without it, an orb the client just saw settle could be
+-- a few milliseconds short on the server's clock, the split refused, and
+-- the board rebuilt over nothing.
+BoardConfig.LIVE_MARGIN = 0.1
+
 -- ── staying in sync ───────────────────────────────────────────────────
 -- The server's ledger and the client's parts are supposed to agree at
 -- all times, and every disagreement so far has been a bug worth fixing
@@ -526,6 +638,10 @@ BoardConfig.SOUNDS = {
 	-- now, so that whole hazard is gone.
 	magnetSpawn = { id = "rbxassetid://12221842", volume = 0.2, speed = 4 },
 	magnetPull = { id = "rbxassetid://12222095", volume = 0.7, speed = 3 },
+
+	-- The splitter. Played where the absorbed orb was, the moment it's
+	-- touched — same place and moment the old "positional" relay used.
+	split = { id = "rbxassetid://101410298856316", volume = 1 },
 }
 
 -- ── collapse visuals (client-side, but shared so one file owns tuning) ─

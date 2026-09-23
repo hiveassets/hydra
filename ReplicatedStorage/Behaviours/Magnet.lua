@@ -2,6 +2,12 @@
     Magnet (ModuleScript)
     Path: ReplicatedStorage → Behaviours
     Parent: Behaviours
+    Exported: 2026-09-23 00:26:23
+]]
+--[[
+    Magnet (ModuleScript)
+    Path: ReplicatedStorage → Behaviours
+    Parent: Behaviours
     Exported: 2026-09-22 18:28:57
 ]]
 --[[

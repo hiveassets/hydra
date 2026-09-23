@@ -4,6 +4,14 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
+    Exported: 2026-09-23 00:26:23
+]]
+--[[
+    DashClient (LocalScript)
+    Path: StarterPlayer → StarterPlayerScripts
+    Parent: StarterPlayerScripts
+    Properties:
+        Disabled: false
     Exported: 2026-09-22 18:28:58
 ]]
 --[[

@@ -4,7 +4,15 @@
     Parent: StarterCharacterScripts
     Properties:
         Disabled: false
-    Exported: 2026-09-22 18:28:59
+    Exported: 2026-09-23 00:26:24
+]]
+--[[
+    SetupPlayer (LocalScript)
+    Path: StarterPlayer → StarterCharacterScripts
+    Parent: StarterCharacterScripts
+    Properties:
+        Disabled: false
+    Exported: 2026-09-22 20:42:27
 ]]
 local Character = script.Parent
 local Humanoid = Character:WaitForChild("Humanoid")

@@ -2,6 +2,12 @@
     Board (ModuleScript)
     Path: ServerScriptService
     Parent: ServerScriptService
+    Exported: 2026-09-23 00:26:21
+]]
+--[[
+    Board (ModuleScript)
+    Path: ServerScriptService
+    Parent: ServerScriptService
     Exported: 2026-09-22 18:28:56
 ]]
 --[[
@@ -24,9 +30,14 @@
 			state    = "queued" | "live" | "gone",
 			launchAt = server time this ball leaves the spawn point,
 			bornAt   = server time it was created,
-			uses     = how many splits/merges a splitter/merger has left
-			           (phase 3; nil for everything else),
+			growingUntil = for a split half, when it finishes growing in
+			           on the client (nil for everything else),
 		}
+
+	A splitter's budget is its size: every split takes SHRINK_PER_SPLIT
+	off it here, and the split that would take it to its floor spends it
+	(see onSplit). There's no separate uses counter to drift out of step
+	with the size a stash slot would store.
 
 	The size in that entry is the only size that exists as far as money
 	is concerned. The client never sends one, and nothing here reads one
@@ -247,11 +258,17 @@ end
 -- it. Only the admin summon uses it, and only because "!summon ball 5
 -- 200" would otherwise be 200 separate remote fires in one frame.
 function Board:queueSpawn(size, opts, batch)
-	if not self.alive or self.collapsing or self.paused then
+	opts = opts or {}
+
+	-- `whilePaused` is for results of something that already happened. A
+	-- split reported a moment before an AFK pause landed is a split the
+	-- client has already animated — the orb is gone on screen — so its
+	-- halves still get queued. They wait out the pause in the queue like
+	-- everything else and come out on resume.
+	if not self.alive or self.collapsing or (self.paused and not opts.whilePaused) then
 		return nil
 	end
 
-	opts = opts or {}
 	local rand = self:_rand()
 	local t = now()
 
@@ -341,6 +358,9 @@ function Board:queueSpawn(size, opts, batch)
 		state = "queued",
 		launchAt = launchAt,
 		bornAt = t,
+		-- Until then it's still growing in on the client — anchored, not
+		-- yet a solid orb — and the cap never picks it (see _enforceCap).
+		growingUntil = opts.growingUntil,
 	}
 	self.nextId += 1
 	self.balls[entry.id] = entry
@@ -358,6 +378,10 @@ function Board:queueSpawn(size, opts, batch)
 		-- looks exactly like an organic spawn, which is deliberate for
 		-- everything except that one visual
 		stashed = opts.stashed or nil,
+		-- an orb growing out of another one rather than launching; see
+		-- BoardProtocol's SPAWN for what the client does with these
+		emergeFrom = opts.emergeFrom,
+		emergeCount = opts.emergeCount,
 	}
 
 	if batch then
@@ -417,11 +441,18 @@ function Board:_enforceCap()
 	-- picked. Having the orb you're carrying vanish out of your hands
 	-- because the cap ticked over is the kind of thing you'd assume was
 	-- a bug even after someone explained it.
+	--
+	-- A split half that's still growing in is the same: it counts, but it
+	-- isn't picked. The old BallManager excluded its Growing balls for
+	-- exactly this reason — an orb that hasn't finished appearing
+	-- shouldn't be sold out from under the player.
+	local t = now()
 	local count, smallest = 0, nil
 	for _, entry in pairs(self.balls) do
 		if entry.kind == "ball" and entry.state == "live" then
 			count += 1
-			if not entry.held and (not smallest or entry.size < smallest.size) then
+			local growing = entry.growingUntil ~= nil and t < entry.growingUntil
+			if not entry.held and not growing and (not smallest or entry.size < smallest.size) then
 				smallest = entry
 			end
 		end
@@ -640,6 +671,86 @@ function Board:onFell(id)
 	end
 
 	self:ensureBall()
+	return true
+end
+
+-- A splitter touched an orb. The second event in the game that can
+-- create value — a 4 or a 5 splits into two 3s — so both orbs are held
+-- to the STRICT predicate, the same one a fall is (see isLive). The
+-- client applies that same check, plus a margin, before it ever starts
+-- pulling an orb in, so in normal play this never refuses anything.
+--
+-- What the client sent is two ids. Everything else comes from here: the
+-- halves' sizes from the ledger's size for the orb, their colour and
+-- radiance from its entry, and the splitter's remaining budget from its
+-- own ledger size. A client that says "I split orb 41" cannot also say
+-- what that was worth.
+function Board:onSplit(splitterId, ballId)
+	if self.collapsing then
+		return false, "board is not running"
+	end
+	-- Deliberately NOT refused while paused. A split reported a moment
+	-- before an AFK pause landed has already happened on screen: the orb
+	-- converged into the splitter and is gone. Refusing it would strand
+	-- that orb on this ledger and cost a resync for nothing. The client
+	-- stops starting new splits the moment it's paused; this only ever
+	-- sees the ones already in flight.
+
+	local splitter = self:entry(splitterId)
+	if not (splitter and splitter.kind == "splitter" and self:isLive(splitter)) then
+		return false, "not a live splitter"
+	end
+	local ball = self:entry(ballId)
+	if not (ball and ball.kind == "ball" and self:isLive(ball)) then
+		return false, "not a live orb"
+	end
+	if ball.size <= Config.SPLITTER.MIN_SPLIT_SIZE then
+		return false, "too small to split"
+	end
+
+	-- The budget. The split that would take the splitter to its floor is
+	-- still a split — it just spends it, and the client plays the send-off
+	-- instead of the shrink. Forgotten without a REMOVE: the client is
+	-- already animating it away.
+	local nextSize, spent = Rules.splitterAfterSplit(splitter.size)
+	if spent then
+		self:_forget(splitterId)
+	else
+		splitter.size = nextSize
+	end
+
+	-- No REMOVE for the orb either: it's the one converging into the
+	-- splitter on the client right now.
+	self:_forget(ballId)
+
+	-- Stamped for now, not for the end of the convergence. The client
+	-- holds them until its own convergence has finished, so they appear
+	-- the moment the orb lands inside the splitter whatever the ping was
+	-- — and from here they're live and can be split or fall like any
+	-- other orb once they've had the usual grace.
+	local t = now()
+	local growingUntil = t + Config.SPLITTER.CONVERGE_TIME + Config.GROW_TIME
+
+	local a, b = Rules.splitHalves(ball.size)
+	local batch = {}
+	for _, size in ipairs({ a, b }) do
+		self:queueSpawn(size, {
+			forceBall = true,       -- a half is never a fresh roll
+			radiant = ball.radiant, -- a radiant orb splits into two radiant halves
+			color = ball.color,
+			at = t,
+			whilePaused = true,
+			emergeFrom = ballId,
+			emergeCount = 2,
+			growingUntil = growingUntil,
+		}, batch)
+	end
+	if #batch > 0 then
+		self:_send(ToClient.SPAWN, batch)
+	end
+
+	self:ensureBall()
+	self:_enforceCap()
 	return true
 end
 
@@ -1055,6 +1166,9 @@ function Board:setPaused(paused)
 				local entry = self.balls[id]
 				if entry and entry.state == "queued" then
 					entry.launchAt += delta
+					if entry.growingUntil then
+						entry.growingUntil += delta
+					end
 				end
 			end
 			self.lastLaunchAt += delta

@@ -2,6 +2,12 @@
     BoardRules (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
+    Exported: 2026-09-23 00:26:23
+]]
+--[[
+    BoardRules (ModuleScript)
+    Path: ReplicatedStorage
+    Parent: ReplicatedStorage
     Exported: 2026-09-22 18:28:58
 ]]
 --[[
@@ -139,9 +145,20 @@ end
 -- splitter that has spent them can't be reported as splitting again, no
 -- matter what a client claims.
 function BoardRules.splitterUses(size, shrinkPerSplit, floor)
-	shrinkPerSplit = shrinkPerSplit or 2
-	floor = floor or 5
+	shrinkPerSplit = shrinkPerSplit or Config.SPLITTER.SHRINK_PER_SPLIT
+	floor = floor or Config.SPLITTER.FLOOR
 	return math.max(1, math.ceil((size - floor) / shrinkPerSplit))
+end
+
+-- What a splitter of `size` is worth after one more split, and whether
+-- that split is its last. The split that would take it to FLOOR or below
+-- is the one that spends it — it still happens, the splitter just plays
+-- its send-off instead of shrinking. Shared so the client's animation
+-- and the server's budget can't disagree about which split is the last.
+function BoardRules.splitterAfterSplit(size)
+	local cfg = Config.SPLITTER
+	local nextSize = size - cfg.SHRINK_PER_SPLIT
+	return nextSize, nextSize <= cfg.FLOOR
 end
 
 function BoardRules.mergerUses(size, shrinkFraction, floor)

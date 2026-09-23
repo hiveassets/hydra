@@ -4,6 +4,14 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
+    Exported: 2026-09-23 00:26:24
+]]
+--[[
+    SoundClient (LocalScript)
+    Path: StarterPlayer → StarterPlayerScripts
+    Parent: StarterPlayerScripts
+    Properties:
+        Disabled: false
     Exported: 2026-09-22 18:28:59
 ]]
 --[[
@@ -115,7 +123,7 @@ local PRELOAD_IDS = {
 	"rbxassetid://87758060178138",         -- collapse-telegraph tension loop sfx
 	"rbxassetid://139726170556835",        -- radiant splitter/merger ambient sfx
 	"rbxassetid://137086138620952",        -- radiant splitter/merger explode sfx
-	
+
 	"rbxassetid://140588480958441",        -- stash sky scrolling texture
 	"rbxassetid://81446779718854",         -- stash weld scrolling texture
 	"rbxassetid://116959287602054",        -- stash invert scrolling texture
