@@ -2,6 +2,12 @@
     Board (ModuleScript)
     Path: ServerScriptService
     Parent: ServerScriptService
+    Exported: 2026-09-24 20:25:13
+]]
+--[[
+    Board (ModuleScript)
+    Path: ServerScriptService
+    Parent: ServerScriptService
     Exported: 2026-09-23 02:07:54
 ]]
 --[[
@@ -668,7 +674,13 @@ function Board:onFell(id)
 	local rand = self:_rand()
 	self:_forget(id) -- no REMOVE message: the client is the one that watched it fall
 
-	if entry.kind == "ball" then
+	-- A mimic that falls off before it ever woke splits exactly like the
+	-- orb it was passing for — that was the original design, not an
+	-- accident of it. One that's awake is a creature that walked off the
+	-- edge, and simply goes, the way a bomb does.
+	local fallsLikeABall = entry.kind == "ball" or (entry.kind == "mimic" and not entry.awake)
+
+	if fallsLikeABall then
 		if entry.radiant then
 			-- A radiant doesn't split. It comes back as a radiant of a
 			-- slightly different size, with one ordinary ball alongside it.
@@ -827,6 +839,120 @@ function Board:onMerge(mergerId, idA, idB)
 
 	self:ensureBall()
 	self:_enforceCap()
+	return true
+end
+
+-- ── the mimic ─────────────────────────────────────────────────────────
+-- The client runs the whole creature. The server hears about the three
+-- moments that matter to the ledger or the player's account: it woke (a
+-- badge, and permission to eat), it ate (money), and it turned back into
+-- an orb (a change of kind).
+
+-- A mimic woke up. Marks it awake, which is what onMimicAte checks, and
+-- awards the mimic badge — to this player alone, for a mimic on their own
+-- board (plan decision 2). That badge is also the pet mimic's shop gate.
+--
+-- Idempotent on purpose: a resync rebuilds an awake mimic from scratch,
+-- dormant, and it wakes a second time. That has to be a quiet yes, not a
+-- refusal that costs another resync.
+function Board:onMimicWake(id)
+	local entry = self:entry(id)
+	if not (entry and entry.kind == "mimic" and self:isOnBoard(entry)) then
+		return false, "not a mimic on this board"
+	end
+	if entry.awake then
+		return true
+	end
+	-- The client can't start the clock before the orb launched, so it can
+	-- never truthfully report this sooner. The slack only covers the error
+	-- in its estimate of server time.
+	if now() < entry.launchAt + Config.MIMIC.WAKE_DELAY - 0.5 then
+		return false, "too soon to wake"
+	end
+
+	entry.awake = true
+	if not self.awardedMimicBadge then
+		self.awardedMimicBadge = true
+		self.bridge.badge(Config.BADGES.mimicWake)
+	end
+	return true
+end
+
+-- A mimic caught an orb. Held to the strict predicate, because it's
+-- money: the orb is turned into half its value in cash, straight away.
+-- Everything the mimic's own hunt already required, the ledger checks
+-- again with its own sizes — awake, a plain orb, not radiant, smaller
+-- than the mimic.
+--
+-- No Logs line. Plan decision 3: mimics are never named in the game until
+-- the pet mimic is unlocked, and with per-player badges a line in Logs
+-- would give the secret away to anyone who hadn't met one yet.
+function Board:onMimicAte(mimicId, preyId)
+	if self.collapsing then
+		return false, "board is not running"
+	end
+	-- Not refused while paused, for the reason onSplit gives: the client
+	-- stops starting new hunts the moment it's paused, and one that was
+	-- already committed has already played out on screen.
+
+	local mimic = self:entry(mimicId)
+	if not (mimic and mimic.kind == "mimic" and mimic.awake and self:isLive(mimic)) then
+		return false, "not an awake mimic"
+	end
+	local prey = self:entry(preyId)
+	if not (prey and prey.kind == "ball" and self:isLive(prey)) then
+		return false, "not a live orb"
+	end
+	if prey.radiant then
+		return false, "a mimic never eats a radiant orb"
+	end
+	if prey.size >= mimic.size then
+		return false, "the orb isn't smaller than the mimic"
+	end
+
+	-- The same "last small orb is worth nothing" rule a sell has. The
+	-- mimic already refuses to hunt the last orb on the board, so in
+	-- normal play this never bites; it's here so the rule can't be
+	-- sidestepped by a client that ignores it. Paying nothing rather than
+	-- refusing keeps the two sides in agreement about the orb being gone.
+	local amount = Rules.mimicValue(prey.size)
+	if Rules.isWorthlessOnlyBall(self:liveBallCount(), prey.size) then
+		amount = 0
+	end
+
+	self:_forget(preyId) -- the client is already floating it up into the mimic
+	-- Paid, but not counted toward the $50 / $100 sell badges: those are
+	-- for orbs the player sold, and the original's mimicAbsorb never
+	-- touched them either.
+	self.bridge.pay(amount)
+
+	self:ensureBall()
+	self:_enforceCap()
+	return true, amount
+end
+
+-- An awake mimic turned back into a plain orb: a bomb caught it, or it
+-- was shoved off the edge of the platform. From here it's an ordinary orb
+-- of the same size and colour — sellable, grabbable, stashable, and it
+-- splits if it falls. That's the original design, and it's the one way a
+-- mimic ever becomes worth money in its own right.
+function Board:onMimicRevert(id)
+	local entry = self:entry(id)
+	-- Already an orb: both sides agree, so that's a yes. The client
+	-- guards against reporting twice, but a bomb and the platform edge
+	-- can both reach for the same mimic in one frame, and agreeing is
+	-- never worth a board rebuild.
+	if entry and entry.kind == "ball" then
+		return true
+	end
+	if not (entry and entry.kind == "mimic" and self:isOnBoard(entry)) then
+		return false, "not a mimic on this board"
+	end
+	if not entry.awake then
+		return false, "only an awake mimic can turn back"
+	end
+	entry.kind = "ball"
+	entry.awake = nil
 	return true
 end
 

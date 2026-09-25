@@ -3,7 +3,7 @@
     Path: StarterPlayer → StarterPlayerScripts → PlayerModule → CameraModule → ZoomController
     Parent: ZoomController
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-23 02:07:56
+    Exported: 2026-09-24 20:25:15
 ]]
 --!nonstrict
 --------------------------------------------------------------------------------

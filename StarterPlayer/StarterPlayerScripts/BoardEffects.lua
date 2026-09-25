@@ -2,6 +2,12 @@
     BoardEffects (ModuleScript)
     Path: StarterPlayer → StarterPlayerScripts
     Parent: StarterPlayerScripts
+    Exported: 2026-09-24 20:25:14
+]]
+--[[
+    BoardEffects (ModuleScript)
+    Path: StarterPlayer → StarterPlayerScripts
+    Parent: StarterPlayerScripts
     Exported: 2026-09-23 02:07:55
 ]]
 --[[
@@ -209,6 +215,33 @@ end
 -- Returns the Highlight so the caller can keep recolouring it (a
 -- radiant ball's fade tracks its own rainbow rather than freezing on
 -- whatever hue the sale started on).
+-- A mimic's legs are separate parts in a Model under its body (see
+-- MimicLegsClient), and a Highlight on the body covers the body alone —
+-- so a bomb's hit, the collapse or a knock lit up a floating head. This
+-- gives the legs a copy of whatever highlight the body just got, tweened
+-- the same way, and removes it whenever the original goes: when the
+-- caller destroys it, when a fade finishes, or when the orb itself does.
+--
+-- Any other orb has no MimicLegs and this does nothing. Legs that sprout
+-- AFTER a highlight was made don't get one, which only matters for a fade
+-- that happens to straddle the exact moment a mimic wakes.
+local function mirrorOntoLegs(highlight, part, tweenInfo, goal)
+	local legs = part:FindFirstChild("MimicLegs")
+	if not (legs and legs:IsA("Model")) then
+		return
+	end
+	local copy = highlight:Clone()
+	copy.Parent = legs -- no Adornee: a Highlight lights up the Model it's parented to
+	highlight.Destroying:Connect(function()
+		if copy.Parent then
+			copy:Destroy()
+		end
+	end)
+	if tweenInfo then
+		TweenService:Create(copy, tweenInfo, goal):Play()
+	end
+end
+
 function BoardEffects.fadeIn(part, color, duration, alwaysOnTop)
 	local highlight = Instance.new("Highlight")
 	highlight.FillColor = color
@@ -217,11 +250,9 @@ function BoardEffects.fadeIn(part, color, duration, alwaysOnTop)
 	highlight.DepthMode = alwaysOnTop and Enum.HighlightDepthMode.AlwaysOnTop or Enum.HighlightDepthMode.Occluded
 	highlight.Parent = part
 
-	TweenService:Create(
-		highlight,
-		TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{ FillTransparency = 0 }
-	):Play()
+	local info = TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	mirrorOntoLegs(highlight, part, info, { FillTransparency = 0 })
+	TweenService:Create(highlight, info, { FillTransparency = 0 }):Play()
 
 	return highlight
 end
@@ -235,23 +266,24 @@ end
 -- almost all the colour is gone in the first fifth of the time and the
 -- rest is a tail. A Quad fade over the same 0.5s reads as a glow rather
 -- than a hit.
-function BoardEffects.fadeOut(part, color, duration, easingStyle)
+--
+-- startTransparency (default 0, fully solid) is where the fill starts:
+-- a thrown orb's knock on a mimic flashes at half strength.
+function BoardEffects.fadeOut(part, color, duration, easingStyle, startTransparency)
 	local highlight = Instance.new("Highlight")
 	highlight.FillColor = color
-	highlight.FillTransparency = 0
+	highlight.FillTransparency = startTransparency or 0
 	highlight.OutlineTransparency = 1
 	highlight.DepthMode = Enum.HighlightDepthMode.Occluded
 	highlight.Parent = part
 
-	local tween = TweenService:Create(
-		highlight,
-		TweenInfo.new(
-			duration,
-			easingStyle or Enum.EasingStyle.Exponential,
-			Enum.EasingDirection.Out
-		),
-		{ FillTransparency = 1 }
+	local info = TweenInfo.new(
+		duration,
+		easingStyle or Enum.EasingStyle.Exponential,
+		Enum.EasingDirection.Out
 	)
+	mirrorOntoLegs(highlight, part, info, { FillTransparency = 1 })
+	local tween = TweenService:Create(highlight, info, { FillTransparency = 1 })
 
 	-- Destroyed on completion rather than left at transparency 1: a
 	-- Highlight still costs something to render, and a busy board can

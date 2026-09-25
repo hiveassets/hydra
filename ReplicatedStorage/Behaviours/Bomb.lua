@@ -2,6 +2,12 @@
     Bomb (ModuleScript)
     Path: ReplicatedStorage → Behaviours
     Parent: Behaviours
+    Exported: 2026-09-24 20:25:14
+]]
+--[[
+    Bomb (ModuleScript)
+    Path: ReplicatedStorage → Behaviours
+    Parent: Behaviours
     Exported: 2026-09-23 02:07:55
 ]]
 --[[
@@ -54,14 +60,13 @@
 	    to notice. The client hides a sold orb on the click now, so
 	    `ctx.alive()` already covers it.
 
-	THE MIMIC DEFUSE IS NOT HERE YET
+	THE MIMIC DEFUSE
 
-	A blast is the only thing that ever turns a woken board mimic back
-	into a plain orb, and a pet mimic is exempt from bombs entirely.
-	None of that can be written yet, because mimics don't come back
-	until step 5 and there's nothing to test it against. The impulse
-	pass below is marked where it slots in, and the server event this
-	sends is already shaped to carry the defused ids when it does.
+	A blast is one of two things that turn an awake board mimic back into
+	a plain orb (the platform edge is the other). The bomb doesn't know
+	how: it asks each orb in range to defuse itself (ctx.defuse), and only
+	an awake mimic has anything registered. The mimic tells the server
+	about its own revert, so this still only reports its own detonation.
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -206,8 +211,8 @@ local function explode(ctx)
 	-- board restocks itself. Sent before the local teardown so a client
 	-- that dies mid-explosion still can't leave an orphan on the ledger.
 	--
-	-- When mimics land in step 5 this grows a second argument: the ids
-	-- the blast defused, for the server to turn back into plain orbs.
+	-- Any mimic the blast defuses reports that itself (MIMIC_REVERT), so
+	-- this stays one message about one orb.
 	ctx.report(ctx.ops.EXPIRED, ctx.id)
 
 	ctx.effects.soundAt(position, ctx.config.SOUNDS.bombBoom)
@@ -238,10 +243,16 @@ local function explode(ctx)
 			local offset = other.Position - position
 			local distance = offset.Magnitude
 
-			-- STEP 5 GOES HERE: a woken board mimic inside the radius is
-			-- defused back into a plain orb, before the impulse below, so
-			-- that the same blast that strips it is what sends it flying.
-			-- Pet mimics are exempt from both.
+			-- An awake mimic inside the radius is defused back into a
+			-- plain orb first, so the same blast that strips it is what
+			-- sends it flying. It's the mimic's own behaviour that knows
+			-- what defusing means (see its setDefuse), and only an AWAKE
+			-- one has registered anything — a dormant mimic is just an
+			-- orb as far as a blast is concerned, and so is anything else.
+			-- Pet mimics (step 7) will simply never register one.
+			if distance <= blastRadius then
+				ctx.defuse(other)
+			end
 
 			-- Anchored parts sit it out: that's a held orb (it's welded
 			-- into the player's hands) or one mid-stash. An impulse is

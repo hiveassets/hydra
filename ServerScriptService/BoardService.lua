@@ -2,6 +2,12 @@
     BoardService (ModuleScript)
     Path: ServerScriptService
     Parent: ServerScriptService
+    Exported: 2026-09-24 20:25:13
+]]
+--[[
+    BoardService (ModuleScript)
+    Path: ServerScriptService
+    Parent: ServerScriptService
     Exported: 2026-09-23 02:07:54
 ]]
 --[[
@@ -314,6 +320,38 @@ handlers[ToServer.MERGE] = function(_player, board, mergerId, idA, idB)
 		board:reject(idB, reason)
 	elseif board:entry(mergerId) then
 		board:reject(mergerId, reason)
+	end
+end
+
+-- The mimic's three moments. See Board's mimic section for what each
+-- one checks.
+--
+-- A refused wake needs no repair: nothing has changed hands yet, and the
+-- only consequence is that the ledger won't let that mimic eat — which
+-- surfaces, and repairs itself, as a refused catch below.
+handlers[ToServer.MIMIC_WAKE] = function(_player, board, id)
+	board:onMimicWake(id)
+end
+
+-- A refused catch is the usual shape: the client has already started
+-- floating the orb into the mimic, so if the ledger still holds it, that
+-- orb is the divergence.
+handlers[ToServer.MIMIC_ATE] = function(_player, board, mimicId, preyId)
+	local ok, reason = board:onMimicAte(mimicId, preyId)
+	if ok then
+		return
+	end
+	if board:entry(preyId) then
+		board:reject(preyId, reason)
+	end
+end
+
+-- A refused revert leaves the client holding what it thinks is a plain
+-- orb and the ledger holding a mimic — the one it would refuse to sell.
+handlers[ToServer.MIMIC_REVERT] = function(_player, board, id)
+	local ok, reason = board:onMimicRevert(id)
+	if not ok and board:entry(id) then
+		board:reject(id, reason)
 	end
 end
 

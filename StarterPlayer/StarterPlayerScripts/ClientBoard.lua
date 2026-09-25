@@ -2,6 +2,12 @@
     ClientBoard (ModuleScript)
     Path: StarterPlayer → StarterPlayerScripts
     Parent: StarterPlayerScripts
+    Exported: 2026-09-24 20:25:14
+]]
+--[[
+    ClientBoard (ModuleScript)
+    Path: StarterPlayer → StarterPlayerScripts
+    Parent: StarterPlayerScripts
     Exported: 2026-09-23 02:07:55
 ]]
 --[[
@@ -481,36 +487,73 @@ local function absorbable(part)
 	return entry.id, entry.size
 end
 
--- Claims the orb and pulls it into `target` over `duration`, shrinking it
--- to nothing, then removes it from the board. Returns its id, or nil if
--- it can't be taken. The claim is synchronous, so nothing else — another
--- splitter, the next frame of this one, a sell click — can take the same
--- orb once this has returned.
+-- Claims the orb and pulls it into `target` over `duration`, then removes
+-- it from the board. Returns its id, or nil if it can't be taken. The
+-- claim is synchronous, so nothing else — another special, the next frame
+-- of this one, a sell click — can take the same orb once this has
+-- returned.
 --
 -- `pendingAttribute` goes on the part for scripts that ask the part
 -- rather than the board (StashClient checks SplitPending/MergePending).
 --
--- The target is a POSITION, captured by the caller when it acted — not
--- the special's part. Nothing here depends on the special still existing.
-local function absorb(part, target, duration, pendingAttribute)
+-- `target` is either a POSITION, captured by the caller when it acted —
+-- a splitter or merger, whose results come out of the spot it was
+-- standing on — or a FUNCTION returning one each frame, for a special
+-- that keeps moving while it eats (a mimic). If the function stops
+-- answering, the pull finishes on the last position it gave. Either way
+-- nothing here depends on the special still existing: the board owns the
+-- orb until it's gone.
+--
+-- `opts`, all optional, for the ways a mimic's eat differs from a
+-- splitter's pull:
+--   shrink      false to keep the orb its size on the way in (default
+--               shrinks to nothing, easing the move)
+--   fadeColor   a highlight that fades in over the pull, as a sell's does
+--   flashColor  a flash where the orb ends up, at its ledger size
+--   sound       played there as it goes
+--   easingStyle, easingDirection
+--               the easing on the move when the orb keeps its size
+--               (default linear, as MimicFuse did it). With `physical`,
+--               the easing on how hard it's steered instead.
+--   flashInFront
+--               a distance: the flash is drawn this much nearer the
+--               camera than where the orb ended up. A mimic's prey ends
+--               up in the middle of its body, and a flash drawn there is
+--               hidden by the body (it respects depth, like a sell's), so
+--               all you saw was whatever poked out. Pass the body's
+--               radius and the whole flash sits on its surface.
+--   physical    true to leave the orb a live physics body the whole way:
+--               it keeps its momentum, spin and gravity, and is steered
+--               into the target rather than carried there (see below)
+local function absorb(part, target, duration, pendingAttribute, opts)
 	local entry = byPart[part]
 	if not entry or entry.claimed then
 		return nil
 	end
+	opts = opts or {}
 	entry.claimed = true
 	if pendingAttribute then
 		part:SetAttribute(pendingAttribute, true)
 	end
 
-	-- Anchored so the pull reads cleanly rather than fighting gravity and
-	-- momentum; off the raycast so it can't be grabbed, sold or stashed
-	-- mid-pull.
-	part.Anchored = true
-	part.CanCollide = false
+	-- Off the raycast so it can't be grabbed, sold or stashed mid-pull.
+	-- A carried pull is also anchored and non-colliding, so it reads
+	-- cleanly rather than fighting gravity and momentum. A physical one
+	-- stays exactly as it was: a live body that's steered in.
+	local physical = opts.physical == true
 	part.CanQuery = false
+	if not physical then
+		part.Anchored = true
+		part.CanCollide = false
+	end
 
+	local shrinks = opts.shrink ~= false and not physical
+	local follow = type(target) == "function" and target or nil
+	local goal = follow and (follow() or part.Position) or target
 	local startPos = part.Position
 	local startSize = part.Size.X
+
+	local highlight = opts.fadeColor and BoardEffects.fadeIn(part, opts.fadeColor, duration) or nil
 
 	task.spawn(function()
 		local elapsed = 0
@@ -527,20 +570,95 @@ local function absorb(part, target, duration, pendingAttribute)
 			end
 			elapsed += dt
 
+			if follow then
+				goal = follow() or goal
+			end
+
 			local alpha = math.clamp(elapsed / duration, 0, 1)
-			local move = TweenService:GetValue(alpha, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
-			local shrink = TweenService:GetValue(alpha, Enum.EasingStyle.Exponential, Enum.EasingDirection.In)
-			local size = startSize * (1 - shrink)
-			part.Size = Vector3.new(size, size, size)
-			part.CFrame = CFrame.new(startPos:Lerp(target, move))
+			if physical then
+				-- Steered, not carried. Each frame works out the velocity
+				-- that would reach the target in the time left, and blends
+				-- the orb's real velocity toward it by a steering strength
+				-- that eases up from nothing to total. Early on that's
+				-- almost nothing, so the orb carries on doing whatever it
+				-- was doing — rolling, bouncing, falling — and by the end
+				-- it's all steering, so it arrives on time wherever the
+				-- target has walked off to. The blend is per 1/60s, so it
+				-- steers the same at any framerate.
+				local steer = TweenService:GetValue(
+					alpha,
+					opts.easingStyle or Enum.EasingStyle.Exponential,
+					opts.easingDirection or Enum.EasingDirection.In
+				)
+				local remaining = math.max(duration - elapsed, 1 / 30)
+				local desired = (goal - part.Position) / remaining
+				local blend = 1 - (1 - steer) ^ (dt * 60)
+				part.AssemblyLinearVelocity = part.AssemblyLinearVelocity:Lerp(desired, blend)
+				-- Once the steering has it, nothing on the way in (another
+				-- orb, the lip of something) can hold it back from the
+				-- target. Before that, it collides like any orb.
+				if steer > 0.5 and part.CanCollide then
+					part.CanCollide = false
+				end
+			elseif shrinks then
+				local move = TweenService:GetValue(alpha, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
+				local shrink = TweenService:GetValue(alpha, Enum.EasingStyle.Exponential, Enum.EasingDirection.In)
+				local size = startSize * (1 - shrink)
+				part.Size = Vector3.new(size, size, size)
+				part.CFrame = CFrame.new(startPos:Lerp(goal, move))
+			else
+				-- Straight-line and full-size: the orb is lifted up into
+				-- whatever's eating it. Eased if the caller asked for it.
+				local move = alpha
+				if opts.easingStyle then
+					move = TweenService:GetValue(alpha, opts.easingStyle, opts.easingDirection or Enum.EasingDirection.In)
+				end
+				part.CFrame = CFrame.new(startPos:Lerp(goal, move))
+			end
 		end
 
-		if entries[entry.id] == entry then
-			forget(entry)
+		if entries[entry.id] ~= entry then
+			return
+		end
+		local position, size = part.Position, entry.size
+		if highlight and highlight.Parent then
+			highlight:Destroy()
+		end
+		forget(entry)
+		if opts.flashColor then
+			local flashAt = position
+			local camera = Workspace.CurrentCamera
+			if opts.flashInFront and camera then
+				local toCamera = camera.CFrame.Position - position
+				if toCamera.Magnitude > opts.flashInFront then
+					flashAt = position + toCamera.Unit * opts.flashInFront
+				end
+			end
+			BoardEffects.flash(flashAt, size, opts.flashColor)
+		end
+		if opts.sound then
+			BoardEffects.soundAt(position, opts.sound)
 		end
 	end)
 
 	return entry.id
+end
+
+-- How many plain orbs are actually on the board and available: landed or
+-- landing, and not already on their way out. A mimic won't hunt when this
+-- is one or none — it would be eating the last orb anyone has to sell.
+local function plainOrbCount()
+	local count = 0
+	for _, entry in pairs(entries) do
+		if entry.kind == "ball"
+			and entry.part
+			and (entry.state == "settled" or entry.state == "ascending" or entry.state == "emerging")
+			and not (entry.claimed or entry.retiring or entry.selling or entry.stashing)
+		then
+			count += 1
+		end
+	end
+	return count
 end
 
 -- ── emerging ──────────────────────────────────────────────────────────
@@ -734,10 +852,50 @@ local function startBehaviour(entry)
 			return entry.state
 		end,
 
-		-- See absorbable / absorb / emergeAt above.
+		-- See absorbable / absorb / emergeAt / plainOrbCount above.
 		absorbable = absorbable,
 		absorb = absorb,
 		emergeAt = emergeAt,
+		plainOrbCount = plainOrbCount,
+
+		-- This special stops being one and becomes an ordinary orb of the
+		-- same size and colour — an awake mimic, defused by a bomb or
+		-- pushed off the platform. The behaviour stops (so anything it
+		-- registered with onStop is torn down), and the part is given
+		-- back everything a plain orb has: the name SellClient, GrabClient
+		-- and HudUI go by, its size readout, and the orb collision group.
+		-- The caller tells the server; this is only the local half.
+		becomeBall = function()
+			stopBehaviours(entry)
+			entry.kind = "ball"
+			entry.defuse = nil
+			part.Name = ballTemplate.Name
+			part.CollisionGroup = CG.Balls
+			part.CanCollide = true
+			part.CanQuery = true
+			setDisplayText(part, entry.size)
+		end,
+
+		-- A bomb reaching into another orb's behaviour. A special that can
+		-- be defused registers what that means for it here; ctx.defuse on
+		-- another part runs it, synchronously, and says whether it did.
+		-- Synchronous because the blast defuses and THEN pushes, in the
+		-- same pass — a mimic still standing on its walk servos would
+		-- shrug off the very impulse that's meant to send it flying.
+		setDefuse = function(fn)
+			entry.defuse = fn
+		end,
+
+		defuse = function(other)
+			local otherEntry = byPart[other]
+			local fn = otherEntry and otherEntry.defuse
+			if not fn then
+				return false
+			end
+			otherEntry.defuse = nil
+			fn()
+			return true
+		end,
 
 		-- This orb is on its way out under its own power — a splitter
 		-- playing its send-off after the ledger has already let it go.

@@ -4,6 +4,14 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
+    Exported: 2026-09-24 20:25:14
+]]
+--[[
+    GrabClient (LocalScript)
+    Path: StarterPlayer → StarterPlayerScripts
+    Parent: StarterPlayerScripts
+    Properties:
+        Disabled: false
     Exported: 2026-09-23 02:07:55
 ]]
 --[[
@@ -320,6 +328,12 @@ local function releaseHeldBall(speed)
 	justThrown[ball] = os.clock()
 
 	if speed > 0 then
+		-- Marks it as a throw, for anything it might hit on the way. An
+		-- awake mimic reads this to decide whether the orb that just
+		-- touched it was thrown at it (and knocks itself back), or merely
+		-- rolled into it. Only a real throw, not a drop; the mimic clears
+		-- it when it uses it, so one throw is one knock.
+		ball:SetAttribute("ThrownAt", os.clock())
 		local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
 		if hrp then
 			playLocalSound(hrp, THROW_SND_ID, THROW_SND_VOL, randomThrowPitch())

@@ -5,6 +5,15 @@
     Properties:
         Disabled: false
         RunContext: Enum.RunContext.Legacy
+    Exported: 2026-09-24 20:25:13
+]]
+--[[
+    PetMimicFuse (Script)
+    Path: ReplicatedStorage
+    Parent: ReplicatedStorage
+    Properties:
+        Disabled: false
+        RunContext: Enum.RunContext.Legacy
     Exported: 2026-09-23 02:07:54
 ]]
 --[[
@@ -155,7 +164,10 @@ local REVERT_SOUND = "rbxassetid://12222152"
 -- ── config: wake-up ─────────────────────────────────────────────────
 local PET_WAKE_DELAY = 2         -- seconds spent dormant before waking — MUCH shorter than a board mimic's 5s (MimicFuse's WAKE_DELAY), since this is expected to happen every respawn, not just once in a while
 local WAKE_MIN_Y = -5            -- mirrors BallManager's own FALL_Y/MimicFuse's own copy — see stillAsleep below
-local LEGS_SPROUT_TIME = 1.0     -- MUST match MimicLegsClient's own LEGS_SPROUT_TIME — see MimicFuse's identical constant for why
+-- Read from BoardConfig now: MimicLegsClient paces the sprout from there,
+-- and a pet that rose on its own 1.0s would stand up before its last leg
+-- was out.
+local LEGS_SPROUT_TIME = require(Rep:WaitForChild("BoardConfig")).MIMIC.LEGS_SPROUT_TIME
 local BODY_RISE_TIME = 0.6
 local LEG_LIFT_FRAC = 1.3        -- MUST match MimicLegsClient's own LEG_LIFT_FRAC
 

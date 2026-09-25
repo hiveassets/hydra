@@ -2,6 +2,12 @@
     BoardProtocol (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
+    Exported: 2026-09-24 20:25:14
+]]
+--[[
+    BoardProtocol (ModuleScript)
+    Path: ReplicatedStorage
+    Parent: ReplicatedStorage
     Exported: 2026-09-23 02:07:55
 ]]
 --[[
@@ -94,6 +100,18 @@ BoardProtocol.ToServer = {
 	-- has already started pulling both in. Same shape as SPLIT: ids only.
 	-- The result's size, colour and radiance all come from the ledger.
 	MERGE = "merge",
+	-- (mimicId) this mimic has woken up. The server marks it awake —
+	-- which is what lets it eat — and awards the mimic badge. Refused if
+	-- it isn't WAKE_DELAY old yet; harmless to repeat (a resync replays
+	-- the wake).
+	MIMIC_WAKE = "mimicWake",
+	-- (mimicId, preyId) this mimic has caught an orb and started eating
+	-- it. The server pays half the ORB's ledger size to the board's owner.
+	MIMIC_ATE = "mimicAte",
+	-- (mimicId) this awake mimic turned back into a plain orb: a bomb
+	-- caught it, or it was pushed off the edge of the platform. From here
+	-- the ledger treats it as an ordinary orb of the same size.
+	MIMIC_REVERT = "mimicRevert",
 }
 
 -- ── server to client ──────────────────────────────────────────────────

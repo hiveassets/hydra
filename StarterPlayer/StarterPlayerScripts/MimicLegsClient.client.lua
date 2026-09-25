@@ -4,6 +4,14 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
+    Exported: 2026-09-24 20:25:14
+]]
+--[[
+    MimicLegsClient (LocalScript)
+    Path: StarterPlayer → StarterPlayerScripts
+    Parent: StarterPlayerScripts
+    Properties:
+        Disabled: false
     Exported: 2026-09-23 02:07:55
 ]]
 --[[
@@ -62,7 +70,23 @@ local WS = game:GetService("Workspace")
 local Players = game:GetService("Players")
 local ContentProvider = game:GetService("ContentProvider")
 
+-- LEGS_SPROUT_TIME and LEG_LIFT_FRAC used to be copied here and in
+-- MimicFuse by hand, each with a comment saying they MUST match. The
+-- mimic's behaviour now runs on this same client (ReplicatedStorage →
+-- Behaviours → Mimic), and both read the one copy in BoardConfig.MIMIC.
+--
+-- Nothing else in this script changed in the rewrite: it still watches
+-- workspace.Balls for an orb with MimicActive set and draws its legs off
+-- that orb's CFrame every frame. The folder and the orb are both local
+-- now, so the replication mismatch this script's header describes can't
+-- happen any more — the legs and the body are the same machine's physics.
+local MimicConfig = require(game:GetService("ReplicatedStorage"):WaitForChild("BoardConfig")).MIMIC
+
 local player = Players.LocalPlayer
+
+-- The board's orbs. A foot standing on one follows it by position only;
+-- see "footholds" in attachLegs.
+local ballsFolderForFeet = WS:WaitForChild("Balls")
 
 -- ── config: sound ──────────────────────────────────────────────────
 -- purely cosmetic, per-client sounds for this script's own leg
@@ -75,7 +99,7 @@ local player = Players.LocalPlayer
 -- to fire a remote from, so each client just plays its own copy
 -- locally, in step with its own local leg animation.
 --
--- LEG_COUNT legs sprout ~perLegSproutTime apart, all firing the same cue.
+-- LEG_COUNT legs start sprouting a fraction of a second apart, all firing the same cue.
 -- Re-triggering the identical asset id that fast is a known, long-standing
 -- Roblox engine limitation (still open on the DevForum as of this writing,
 -- reports go back to 2017) — replaying the same SoundId repeatedly glitches,
@@ -155,7 +179,7 @@ end
 -- hip on its own, at whatever pace MimicFuse actually raises the body —
 -- that's just solveKnee straightening as hip-to-foot distance grows,
 -- the same IK that already runs the rest of the time.
-local LEGS_SPROUT_TIME = 1.0
+local LEGS_SPROUT_TIME = MimicConfig.LEGS_SPROUT_TIME
 
 -- ── config: legs ────────────────────────────────────────────────────
 local LEG_COUNT = 3              -- see buildHipLocal below for how the hip layout adapts to whatever this is set to — spread evenly around the body, so this is the only line that needs to change to add/remove legs
@@ -163,7 +187,7 @@ local HIP_ATTACH_FRAC = 0.7      -- where each leg's hip SOCKET sits, relative t
 local FOOT_SPREAD_FRAC = 0.95    -- extra outward distance (x body radius) the RESTING FOOT is pushed beyond the hip, along the same outward direction the hip already faces — this is what actually widens the stance, without moving the hip socket itself. Tune this one to taste for a wider/narrower stance.
 local LEG_THICKNESS_FRAC = 0.2   -- both leg segments' thickness, relative to body size — upper and lower now share one thickness; the taper between them comes from LEG_MESH_ID_UPPER/LEG_MESH_ID_LOWER being different sculpted meshes instead
 local LEG_SEGMENT_FRAC = 1       -- each of the 2 leg segments' length, relative to body size
-local LEG_LIFT_FRAC = 1.3        -- clearance the legs hold the ball's underside above the floor, as a FRACTION of body size — scales with the mimic instead of a fixed stud gap, since the legs themselves (LEG_SEGMENT_FRAC below) also scale with body size. MUST match MimicFuse's own LEG_LIFT_FRAC. Tune to taste.
+local LEG_LIFT_FRAC = MimicConfig.LEG_LIFT_FRAC -- clearance the legs hold the body's underside above the floor, as a fraction of body size; shared with the Mimic behaviour, which rides the body at this height
 local LEG_REFLECTANCE = 0.5      -- reflectance on both leg segments
 -- TODO: swap these placeholders for the real sculpted upper/lower meshes once ready — both point at the same asset for now, so nothing looks different in-game until they're replaced.
 local LEG_MESH_ID_UPPER = "rbxassetid://116303918671108" -- hip-to-knee segment mesh — MeshType.Head (the old approach) silently falls back to rendering as a plain cylinder once stretched past ~4 studs on its long axis, which every leg segment routinely is; this mesh is a real FileMesh instead, so it doesn't have that size cutoff. Unlike Head, a FileMesh doesn't auto-fill the part's Size on its own — placeSegment below has to keep its Scale in sync by hand.
@@ -174,8 +198,8 @@ local STEP_TIME_JITTER = 0.1     -- +/- randomness applied to each individual st
 local MIN_STEP_TIME = 0.08       -- floor on a single step's duration once speedScale (see the stepDur assignment below) starts shrinking it for a hip moving faster than strideLeadReferenceSpeed — without this, a pet mimic's CHASE_SPEED hip could scale STEP_TIME down toward ~0 and the swing would collapse into a single-frame teleport instead of a fast-but-still-visible step
 local STEP_THRESHOLD_FRAC = 3.2  -- a foot re-steps once it's drifted this far (x body radius) from its rest spot — raised alongside STRIDE_LEAD_FRAC/FOOT_SPREAD_FRAC below so a foot is still allowed to drift the farther distance a longer stride implies before it's forced to catch up
 local STEP_THRESHOLD_MAX_REACH_FRAC = 0.7 -- SAFETY CAP: the actual drift threshold used below is never allowed past this fraction of a leg's true max physical reach (2x a segment's length — see solveKnee's clamp), so a foot is always forced to re-plant before it's stretched anywhere near the leg's actual reach
-local IDLE_COMFORT_DELAY = 0.5   -- seconds the whole body must sit essentially stationary (see idleTime in updateFeet) before feet start getting nudged toward a tidy rest stance — short walk pauses shouldn't trigger this, only genuine idling
-local IDLE_COMFORT_THRESHOLD_FRAC = 0.35 -- x STEP_THRESHOLD_FRAC's own drift distance — much tighter than the ordinary re-step threshold, since the point here is catching a foot that's technically within the normal walking tolerance but still landed somewhere crooked/awkward once there's no hurry to fix it
+local IDLE_COMFORT_DELAY = 0.25   -- seconds the whole body must sit essentially stationary (see idleTime in updateFeet) before feet start getting nudged toward a tidy rest stance — short walk pauses shouldn't trigger this, only genuine idling
+local IDLE_COMFORT_THRESHOLD_FRAC = 0.15 -- x STEP_THRESHOLD_FRAC's own drift distance — much tighter than the ordinary re-step threshold, since the point here is catching a foot that's technically within the normal walking tolerance but still landed somewhere crooked/awkward once there's no hurry to fix it
 local STRIDE_LEAD_FRAC = 2.2     -- how far ahead of the hip (x body radius, in the current direction of travel) a stepping foot plants AT FULL SPEED — larger than before so each step actually carries the foot a farther distance forward, reading as a longer, farther-reaching stride rather than more frequent short ones. See STRIDE_LEAD_REFERENCE_SPEED_PER_SIZE below for how this scales down at lower speed — this is a ceiling, not the distance every step reaches for.
 local STRIDE_LEAD_REFERENCE_SPEED_PER_SIZE = 2 -- studs/sec of actual hip speed, PER POINT of bodySize, at which a stepping foot plants the FULL STRIDE_LEAD_FRAC ahead — used to be a flat 10, mirroring MimicFuse's own (then-flat) WALK_SPEED, since that's the speed this is actually tuned to read well at. MimicFuse's WALK_SPEED is now itself derived from a per-size rate rather than a flat number (see that script's own WALK_SPEED_PER_SIZE comment), so this has to scale the same way to keep mirroring it — otherwise a bigger mimic's now-faster walk would outrun what this still thought "full stride" hip speed was, and a smaller mimic's now-slower walk would always read as a full-length stride even while barely moving. The actual reference speed is derived once bodySize is known (see attachLegs below). Below that reference, the plant point's lead scales down proportionally with actual speed (see leadFrac in updateFeet), so a foot settling toward a stop only reaches as far ahead as its real motion warrants, instead of always committing to a full-length stride in whatever direction the hip's velocity last happened to read as.
 
@@ -199,10 +223,6 @@ local STRIDE_LEAD_REFERENCE_SPEED_PER_SIZE = 2 -- studs/sec of actual hip speed,
 -- velocity to begin with.
 local STEP_HOLD_TIME = 0.12      -- seconds a foot stays planted after landing, before the NEXT leg in the fixed step sequence is allowed to start its swing
 local STEP_VERTICAL_THRESHOLD_FRAC = 0.5 -- a PLANTED foot also re-steps once whatever's directly beneath it has moved this far (x body size) from the foot's current height — catches "stepped on something that then moved out from under it"
-local SPRAWL_DOWN_FRAC = 0.45    -- while sprouting (see the sprout section below), the upper segment extends in a straight line — not IK-targeting the ground at all — along a direction blended between "straight outward" (0) and "straight down" (1). This is purely a resting silhouette for the sprout, unrelated to where the foot actually plants once standing.
-local UPPER_GROW_FRAC = 0.5      -- fraction of a single leg's own sprout slice (perLegSproutTime) spent growing the upper (hip-to-knee) segment straight out before the lower (knee-to-foot) segment starts growing down toward the ground — see the sprout section below. The leg reads as unfolding top, then bottom, instead of the whole limb stretching out (and pre-planting its foot) all at once.
-local KNEE_GROUND_CLEARANCE_FRAC = 1 -- minimum clearance (x body size) kept between the knee and the real floor while the upper segment is growing during the sprout — see the sprout section's clamp for why this can't be zero (a knee grown flush with the floor leaves stage 2 no real downward distance to animate).
-local SETTLE_TIME = 0.25         -- once every leg has finished growing out, how long each one takes to swing from where its lower segment happened to touch down into its actual planted stance position — see the settle section below
 local RETRACT_TIME = 0.35        -- seconds all LEG_COUNT legs take to retract back into the body once MimicActive goes false (reverted to a normal ball, or destroyed) — see the retract section below
 local LEG_MAX_RADIUS = 53        -- studs from the world origin (0,0) that a foot is ever allowed to plant beyond — mirrors MimicFuse's own MIMIC_MAX_RADIUS/WORLD_BOUND_RADIUS pattern, but for feet specifically: a wide stance (FOOT_SPREAD_FRAC) plus a long stride (STRIDE_LEAD_FRAC) can otherwise plant a foot noticeably farther from the origin than the platform edge, once the body itself is walking right up near its own MIMIC_MAX_RADIUS. Kept a little tighter than that 55-stud body cap so the stance never visibly pokes past the platform edge before the body itself would revert.
 
@@ -320,7 +340,14 @@ local function attachLegs(mimic)
 	local bodySize = mimic:GetAttribute("TargetSize") or mimic.Size.X
 	local bodyColor = mimic.Color
 
-	local legsFolder = Instance.new("Folder")
+	-- A Model rather than a Folder, and that's the only reason: a
+	-- Highlight can light up a whole Model, but not a Folder, and one on
+	-- the body part covers the body alone. BoardEffects looks for this
+	-- by name and gives the legs a matching highlight whenever the body
+	-- gets one — a bomb's hit, the collapse, a thrown orb's knock — so the
+	-- whole creature lights up rather than a floating head. Nothing else
+	-- about the legs cares what they're grouped in.
+	local legsFolder = Instance.new("Model")
 	legsFolder.Name = "MimicLegs"
 	legsFolder.Parent = mimic
 
@@ -347,6 +374,11 @@ local function attachLegs(mimic)
 		end)
 		legsFolder.Destroying:Connect(function()
 			colorConn:Disconnect()
+			-- no legs, nothing to stand on: the body goes back to judging
+			-- its height by the floor (see publishFootY below)
+			if mimic.Parent then
+				mimic:SetAttribute("FootY", nil)
+			end
 		end)
 	end
 
@@ -386,13 +418,66 @@ local function attachLegs(mimic)
 		if result then
 			local headY = mimic.Position.Y + bodySize / 2 -- top of the mimic's own body
 			if result.Position.Y <= headY then
-				return result.Position.Y
+				-- the part too, so a foot planted here can ride along with
+				-- it (see footholds below)
+				return result.Position.Y, result.Instance
 			end
 			-- whatever the ray hit (a nearby ball, some prop) pokes up
 			-- higher than the mimic's own head — never a valid foot plant,
 			-- so fall back to the floor guess instead of stepping up onto it
 		end
 		return floorGuess
+	end
+
+	-- ── footholds ──────────────────────────────────────────────────────
+	-- A planted foot remembers WHAT it stepped on, not just where. The
+	-- board is physics all the way down — orbs roll, get knocked, get
+	-- bombed, get sold out from under a foot — so a world-space point that
+	-- was ground a moment ago can be empty air now. Every frame a planted
+	-- foot is re-placed on its foothold wherever that has moved to, and a
+	-- foot whose foothold has gone (destroyed, sold, absorbed) re-steps
+	-- straight away instead of standing on nothing. A swinging foot's
+	-- landing spot tracks its foothold the same way, so it lands on the
+	-- thing it was aiming for even if that thing moved mid-swing.
+	--
+	-- Orbs (anything in the Balls folder) are followed by position only.
+	-- They roll, and following their rotation would carry a foot round
+	-- the orb with the roll — under it, eventually. Everything else is
+	-- followed rigidly, rotation included, so a foot on a tilting or
+	-- spinning prop moves as if it were stuck to it. Static ground is
+	-- followed too; it just never moves.
+	--
+	-- Riding along is still bounded by the ordinary checks: a foot carried
+	-- too far from where it should be trips the drift threshold, and one
+	-- carried up or down off the surface under it trips the vertical one,
+	-- and either way it steps.
+	local function makeFoothold(point, hit)
+		if not hit or hit == WS.Terrain then
+			return nil
+		end
+		if hit:IsDescendantOf(ballsFolderForFeet) then
+			return { part = hit, offset = point - hit.Position, rigid = false }
+		end
+		return { part = hit, offset = hit.CFrame:PointToObjectSpace(point), rigid = true }
+	end
+
+	-- where the foothold's point is now, or nil if the foothold is gone
+	local function footholdPoint(hold)
+		local p = hold.part
+		if not p.Parent or not p:IsDescendantOf(WS) then
+			return nil
+		end
+		if hold.rigid then
+			return p.CFrame:PointToWorldSpace(hold.offset)
+		end
+		return p.Position + hold.offset
+	end
+
+	-- the ground under (x, z), and a foothold on whatever that ground is
+	local function groundPoint(x, z)
+		local y, hit = surfaceYAt(x, z)
+		local point = Vector3.new(x, y, z)
+		return point, makeFoothold(point, hit)
 	end
 
 	-- Roblox's default local "forward" is -Z and "right" is +X — flip
@@ -476,6 +561,9 @@ local function attachLegs(mimic)
 			stepping = false,
 			stepFrom = hipWorld,
 			stepTo = hipWorld,
+			foothold = nil, -- what the planted foot is standing on (see footholds above)
+			stepFoothold = nil, -- what a swinging foot is going to land on
+			lostFooting = false, -- the foothold went away: step now
 			stepT = 0,
 			stepDur = STEP_TIME,
 			holdCooldown = 0, -- seconds left before THIS leg specifically is allowed to start its next step, after ITS OWN previous step plants — see the gait comment below for why this is per-leg now, not shared
@@ -646,6 +734,30 @@ local function attachLegs(mimic)
 		-- many of the MAX_CONCURRENT_STEPS slots are currently in use
 		for _, leg in ipairs(legs) do
 			leg.holdCooldown = math.max(leg.holdCooldown - dt, 0)
+
+			-- ride along with whatever it's standing on, or is about to
+			if leg.stepping then
+				if leg.stepFoothold then
+					local p = footholdPoint(leg.stepFoothold)
+					if p then
+						leg.stepTo = p
+					else
+						-- the landing spot went away mid-swing: land where
+						-- it last was; the next check re-steps if that's
+						-- empty air now
+						leg.stepFoothold = nil
+					end
+				end
+			elseif leg.foothold then
+				local p = footholdPoint(leg.foothold)
+				if p then
+					leg.foot = p
+				else
+					leg.foothold = nil
+					leg.lostFooting = true
+				end
+			end
+
 			if leg.stepping then
 				leg.stepT = math.min(leg.stepT + dt / leg.stepDur, 1)
 				local flat = leg.stepFrom:Lerp(leg.stepTo, leg.stepT)
@@ -654,6 +766,7 @@ local function attachLegs(mimic)
 				if leg.stepT >= 1 then
 					leg.stepping = false
 					leg.foot = leg.stepTo
+					leg.foothold, leg.stepFoothold = leg.stepFoothold, nil
 					leg.holdCooldown = STEP_HOLD_TIME
 					playAttachedSound(leg.lower, FOOTSTEP_SOUND, nil, FOOTSTEP_PITCH_MIN + math.random() * (FOOTSTEP_PITCH_MAX - FOOTSTEP_PITCH_MIN)) -- see "config: sound" above — fires for every landing, ordinary gait or recovery alike
 				else
@@ -679,7 +792,7 @@ local function attachLegs(mimic)
 				local leadFrac = math.clamp(leg.leadSpeed / strideLeadReferenceSpeed, 0, 1)
 				local plantPoint = hipWorld + worldOutward(leg.hipLocal) * footSpreadDist + leg.leadDir * (strideLead * leadFrac)
 				plantPoint = clampFootRadius(plantPoint)
-				local restFoot = Vector3.new(plantPoint.X, surfaceYAt(plantPoint.X, plantPoint.Z), plantPoint.Z)
+				local restFoot, restFoothold = groundPoint(plantPoint.X, plantPoint.Z)
 				local underFootY = surfaceYAt(leg.foot.X, leg.foot.Z)
 				local verticalDrift = math.abs(leg.foot.Y - underFootY)
 				local drift = (leg.foot - restFoot).Magnitude
@@ -693,8 +806,11 @@ local function attachLegs(mimic)
 				local comfortThreshold = (idleTime > IDLE_COMFORT_DELAY) and (stepThreshold * IDLE_COMFORT_THRESHOLD_FRAC) or stepThreshold
 				local due = (knocked and drift > stepThreshold * RECOVERY_DRIFT_FRAC)
 					or drift > comfortThreshold or verticalDrift > stepVerticalThreshold
+					or leg.lostFooting
 				if due then
-					table.insert(candidates, { leg = leg, drift = drift, restFoot = restFoot })
+					-- nothing left under it outranks any amount of drift
+					local urgency = leg.lostFooting and math.huge or drift
+					table.insert(candidates, { leg = leg, drift = urgency, restFoot = restFoot, restFoothold = restFoothold })
 				end
 			end
 		end
@@ -735,6 +851,9 @@ local function attachLegs(mimic)
 			leg.stepT = 0
 			leg.stepFrom = leg.foot
 			leg.stepTo = c.restFoot
+			leg.stepFoothold = c.restFoothold
+			leg.foothold = nil
+			leg.lostFooting = false
 
 			-- STEP_TIME/RECOVERY_STEP_TIME were both tuned assuming a hip
 			-- never moves faster than strideLeadReferenceSpeed — true for a
@@ -779,174 +898,193 @@ local function attachLegs(mimic)
 		end
 	end
 
-	-- sprout: legs grow out from stubs ONE AT A TIME — each leg finishes
-	-- entirely before the next one starts — and each leg itself grows in
-	-- two stages rather than both segments stretching together: the
-	-- upper (hip-to-knee) segment extends first, then the lower
-	-- (knee-to-foot) segment extends out from wherever the upper one
-	-- ended and reaches down to touch the ground. Reads as each leg
-	-- unfolding top-then-bottom, rather than the whole limb popping in
-	-- at once with an already-planted foot. Total duration is
-	-- LEGS_SPROUT_TIME split evenly across LEG_COUNT legs, and each
-	-- leg's own slice is further split by UPPER_GROW_FRAC between the
-	-- two stages; MimicFuse holds the body at its settled height for
-	-- that same total span (see its own LEGS_SPROUT_TIME), so the two
-	-- scripts still read as one "sprout, THEN rise" sequence instead of
-	-- the body lifting mid-sprout.
-	local perLegSproutTime = LEGS_SPROUT_TIME / LEG_COUNT
-	for _, leg in ipairs(legs) do
-		leg.grown = false
+	-- sprout: every leg unfolds out of the body in two stages, upper
+	-- segment first, then lower, and the legs overlap: the next leg
+	-- starts its upper segment the moment the previous one starts its
+	-- lower. Each foot lands straight onto the spot it will stand on, so
+	-- there's no settle-into-place afterwards. Then, once the last foot is
+	-- down, the body pushes itself up onto them (the rise, below).
+	--
+	-- Where each leg ends up is worked out once, up front: its foot on the
+	-- ground at the stance position (the same hip + FOOT_SPREAD spot the
+	-- walking IK plants at), and its knee from the same IK the walk uses,
+	-- solved for the body still sitting low. The body sits that low, so
+	-- the solve folds each leg up with its knee high and out — a
+	-- crouched spider — and the rise then straightens the same legs.
+	-- Nothing jumps at the hand-over because it's the same solve.
+	--
+	-- Computed off an IDENTITY orientation at the body's current position
+	-- rather than mimic.CFrame's rotation. The body just landed as a real
+	-- ball and can be resting at any tumbled angle; its rotation has
+	-- nothing to do with which way is up. The Mimic behaviour torques the
+	-- body upright (identity heading) as it rises, so by the time the
+	-- steady-state loop switches to the real mimic.CFrame, they agree.
+	local legUpperFrac = MimicConfig.LEG_UPPER_GROW_FRAC or 0.5
+	-- LEGS_SPROUT_TIME = LEG_COUNT * upper + lower, with upper = frac * perLeg
+	local perLegTime = LEGS_SPROUT_TIME / (LEG_COUNT * legUpperFrac + (1 - legUpperFrac))
+	local upperTime = perLegTime * legUpperFrac
+	local lowerTime = perLegTime - upperTime
+
+	-- The body's standing height comes from here. Every frame the feet are
+	-- down, this publishes FootY on the body: the average height of the
+	-- ground under its feet. The Mimic behaviour holds the body
+	-- STAND_HEIGHT above that, so a foot stepping up onto an orb lifts
+	-- the body by its share, rather than the body hovering a fixed height
+	-- over whatever happens to be under its centre. A foot mid-swing
+	-- counts as the straight line between where it left and where it's
+	-- landing (not the arc of the step), so the height changes smoothly
+	-- across a step instead of jumping when the foot lands.
+	local lastFootY = nil
+	local function publishFootY()
+		local sum = 0
+		for _, leg in ipairs(legs) do
+			if leg.stepping then
+				sum += leg.stepFrom.Y + (leg.stepTo.Y - leg.stepFrom.Y) * leg.stepT
+			else
+				sum += leg.foot.Y
+			end
+		end
+		local footY = sum / #legs
+		if lastFootY == nil or math.abs(footY - lastFootY) > 0.001 then
+			lastFootY = footY
+			mimic:SetAttribute("FootY", footY)
+		end
 	end
 
-	-- draws every OTHER leg (not the one currently growing) at whatever
-	-- state it's already reached: a fully grown-and-planted leg holds its
-	-- finished pose, and a leg that hasn't started at all yet sits
-	-- collapsed to a zero-length stub at its own hip — rather than
-	-- wherever it last happened to be, or the map origin — so it doesn't
-	-- flash into view early or hold a stale pose from a previous leg.
-	local function drawOtherLegs(currentLeg)
-		for _, leg in ipairs(legs) do
-			if leg ~= currentLeg then
-				if leg.grown then
-					placeSegment(leg.upper, leg.finalHip, leg.finalKnee, legThicknessUpper)
-					placeSegment(leg.lower, leg.finalKnee, leg.foot, legThicknessLower)
+	local function identityHip(leg)
+		return (mimic.Position + leg.hipLocal) - Vector3.new(0, bodySize * 0.15, 0)
+	end
+	local function flatOutward(leg)
+		local flatLocal = Vector3.new(leg.hipLocal.X, 0, leg.hipLocal.Z)
+		return flatLocal.Magnitude > 0.001 and flatLocal.Unit or Vector3.new(0, 0, 1)
+	end
+
+	for i, leg in ipairs(legs) do
+		local hipWorld = mimic.Position + leg.hipLocal
+		local hip = identityHip(leg)
+		local outward = flatOutward(leg)
+		local plantPoint = clampFootRadius(hipWorld + outward * footSpreadDist)
+		leg.foot, leg.foothold = groundPoint(plantPoint.X, plantPoint.Z)
+		leg.stepFrom, leg.stepTo = leg.foot, leg.foot
+		local knee = solveKnee(hip, leg.foot, outward, legSegLen)
+		leg.sproutUpperDir = (knee - hip).Unit
+		leg.sproutStart = (i - 1) * upperTime
+		leg.sproutStarted = false
+		leg.sproutLanded = false
+	end
+
+	local function easeOut(a)
+		return 1 - (1 - a) ^ 2
+	end
+	-- the lower segment's curve: slow away from the knee, slow onto the
+	-- ground. An ease-out did nearly all of its swing in the first few
+	-- frames, which read as the foot being flicked down rather than
+	-- lowered.
+	local function easeInOut(a)
+		return a * a * (3 - 2 * a)
+	end
+
+	-- Footholds apply from the very first frame: a foot landing on an orb
+	-- during the sprout lands on it wherever it has rolled, and one whose
+	-- orb is gone drops to whatever is under that spot now.
+	local function trackFoot(leg)
+		if not leg.foothold then
+			return
+		end
+		local p = footholdPoint(leg.foothold)
+		if p then
+			leg.foot = p
+		else
+			leg.foot, leg.foothold = groundPoint(leg.foot.X, leg.foot.Z)
+		end
+		leg.stepFrom, leg.stepTo = leg.foot, leg.foot
+	end
+
+	do
+		local t = 0
+		local finished = false
+		while not finished do
+			if not mimic:GetAttribute("MimicActive") then legsFolder:Destroy() return end
+			local dt = RS.RenderStepped:Wait()
+			t = math.min(t + dt, LEGS_SPROUT_TIME)
+			finished = t >= LEGS_SPROUT_TIME
+
+			for i, leg in ipairs(legs) do
+				local hip = identityHip(leg)
+				local local_t = finished and perLegTime or (t - leg.sproutStart)
+				trackFoot(leg)
+
+				if local_t <= 0 then
+					-- not started: a zero-length stub tucked inside the body
+					placeSegment(leg.upper, hip, hip, legThicknessUpper)
+					placeSegment(leg.lower, hip, hip, legThicknessLower)
 				else
-					local stubHip = (mimic.Position + leg.hipLocal) - Vector3.new(0, bodySize * 0.15, 0)
-					placeSegment(leg.upper, stubHip, stubHip, legThicknessUpper)
-					placeSegment(leg.lower, stubHip, stubHip, legThicknessLower)
+					if not leg.sproutStarted then
+						leg.sproutStarted = true
+						-- a distinct id per leg: see LEG_GROW_SOUND_IDS for why
+						-- the same id can't be replayed this close together
+						local growId = LEG_GROW_SOUND_IDS[((i - 1) % #LEG_GROW_SOUND_IDS) + 1]
+						playAttachedSound(leg.upper, growId, LEG_GROW_VOLUME)
+					end
+
+					-- stage 1: the upper segment grows out of the body
+					-- toward where its knee will be
+					local upperAlpha = easeOut(math.clamp(local_t / upperTime, 0, 1))
+					local knee = hip + leg.sproutUpperDir * (legSegLen * upperAlpha)
+					placeSegment(leg.upper, hip, knee, legThicknessUpper)
+
+					-- stage 2: the lower segment grows out of the knee. It
+					-- starts pointing along the upper segment, carrying the
+					-- reach outward, and swings down as it lengthens, so the
+					-- foot arcs over and lands on its spot rather than
+					-- poking straight at it.
+					local lowerAlpha = easeInOut(math.clamp((local_t - upperTime) / lowerTime, 0, 1))
+					if lowerAlpha <= 0 then
+						placeSegment(leg.lower, knee, knee, legThicknessLower)
+					else
+						-- aimed at where the foot's spot is NOW, from the
+						-- knee's final position
+						local toFoot = leg.foot - (hip + leg.sproutUpperDir * legSegLen)
+						local lowerLen = toFoot.Magnitude
+						local lowerDir = lowerLen > 0.001 and toFoot / lowerLen or Vector3.new(0, -1, 0)
+						local dir = leg.sproutUpperDir:Lerp(lowerDir, lowerAlpha)
+						dir = dir.Magnitude > 0.001 and dir.Unit or lowerDir
+						local footNow = knee + dir * (lowerLen * lowerAlpha)
+						if lowerAlpha >= 1 then
+							footNow = leg.foot
+						end
+						placeSegment(leg.lower, knee, footNow, legThicknessLower)
+						if lowerAlpha >= 1 and not leg.sproutLanded then
+							leg.sproutLanded = true
+							playAttachedSound(leg.lower, FOOTSTEP_SOUND, nil, FOOTSTEP_PITCH_MIN + math.random() * (FOOTSTEP_PITCH_MAX - FOOTSTEP_PITCH_MIN))
+						end
+					end
 				end
 			end
 		end
 	end
 
-	for i, leg in ipairs(legs) do
-		-- distinct id per leg (cycling through the pool if LEG_COUNT ever
-		-- exceeds it) — see LEG_GROW_SOUND_IDS's comment above for why this
-		-- can't just be one id reused for every leg. Ordinary throwaway
-		-- create-play-destroy (playAttachedSound) is fine here now that
-		-- each play targets its own asset id: there's no shared id for a
-		-- leftover instance to race or glitch against.
-		local growId = LEG_GROW_SOUND_IDS[((i - 1) % #LEG_GROW_SOUND_IDS) + 1]
-		playAttachedSound(leg.upper, growId, LEG_GROW_VOLUME)
-
-		-- sprouting is computed off an IDENTITY orientation at the body's
-		-- current position — NOT mimic.CFrame's actual rotation. The body
-		-- just landed as a real physics ball and can settle tumbled at
-		-- any resting angle, not necessarily upright; using its raw
-		-- CFrame here made the legs sprawl out lopsided relative to the
-		-- world (tilted with whatever angle the ball happened to land at)
-		-- instead of radiating evenly outward. This is consistent with
-		-- the push-up phase right after this one, which already
-		-- re-targets the mover at an identity-rotation CFrame (see
-		-- MimicFuse's own "push-up" section) to torque the body upright
-		-- as it rises. The settle phase and steady-state loop right after
-		-- this switch back to the real mimic.CFrame, once the body
-		-- actually has a heading worth tracking.
-		local hipWorld = mimic.Position + leg.hipLocal
-		local hip = hipWorld - Vector3.new(0, bodySize * 0.15, 0)
-		local flatLocal = Vector3.new(leg.hipLocal.X, 0, leg.hipLocal.Z)
-		local outward = flatLocal.Magnitude > 0.001 and flatLocal.Unit or Vector3.new(0, 0, 1)
-
-		-- stage 1 — upper segment: extends outward from the hip, blended
-		-- slightly downward via SPRAWL_DOWN_FRAC so it reads as a hip
-		-- joint rather than a rod poking straight sideways. The lower
-		-- segment sits collapsed to a zero-length stub at whichever knee
-		-- point the upper segment has reached so far, so it visibly
-		-- hasn't started growing of its own yet.
-		--
-		-- The knee's downward travel is clamped to stay above the real
-		-- floor under this hip (with a little clearance to spare) — a
-		-- fixed SPRAWL_DOWN_FRAC blend has no idea how close the ground
-		-- actually is, and at this point in the sequence the body is
-		-- still sitting at its low, just-landed settled height, not yet
-		-- pushed up — so an unclamped downward sprawl routinely grew the
-		-- knee straight into (or through) the platform. Stage 2 below
-		-- then had to reach back UP out of the floor to find the real
-		-- surface, which is what read as the lower segment flipping
-		-- upside-down to touch down. Clamping here keeps stage 2 always
-		-- reaching straight down, never up.
-		local sprawlDir = outward * (1 - SPRAWL_DOWN_FRAC) + Vector3.new(0, -1, 0) * SPRAWL_DOWN_FRAC
-		sprawlDir = sprawlDir.Magnitude > 0.001 and sprawlDir.Unit or Vector3.new(0, -1, 0)
-		local minKneeY = surfaceYAt(hip.X, hip.Z) + bodySize * KNEE_GROUND_CLEARANCE_FRAC
-		local upperTime = perLegSproutTime * UPPER_GROW_FRAC
-		local knee = hip
-		do
-			local t = 0
-			while t < upperTime do
-				if not mimic:GetAttribute("MimicActive") then legsFolder:Destroy() return end
-				local dt = RS.RenderStepped:Wait()
-				t = math.min(t + dt, upperTime)
-				local alpha = 1 - (1 - t / upperTime) ^ 2 -- ease-out
-				local rawKnee = hip + sprawlDir * (legSegLen * alpha)
-				knee = Vector3.new(rawKnee.X, math.max(rawKnee.Y, minKneeY), rawKnee.Z)
-				placeSegment(leg.upper, hip, knee, legThicknessUpper)
-				placeSegment(leg.lower, knee, knee, legThicknessLower)
-				drawOtherLegs(leg)
-			end
-			local rawKnee = hip + sprawlDir * legSegLen
-			knee = Vector3.new(rawKnee.X, math.max(rawKnee.Y, minKneeY), rawKnee.Z)
-			placeSegment(leg.upper, hip, knee, legThicknessUpper)
-		end
-
-		-- stage 2 — lower segment: extends down from that knee and
-		-- reaches for the actual ground beneath it (via surfaceYAt, the
-		-- same raycast the steady-state IK uses once planted) rather than
-		-- a fixed-length straight line, so it grows exactly as far as it
-		-- needs to touch down, whatever the terrain under this particular
-		-- leg happens to be.
-		do
-			local footTarget = clampFootRadius(Vector3.new(knee.X, surfaceYAt(knee.X, knee.Z), knee.Z))
-			local lowerTime = perLegSproutTime - upperTime
-			local t = 0
-			while t < lowerTime do
-				if not mimic:GetAttribute("MimicActive") then legsFolder:Destroy() return end
-				local dt = RS.RenderStepped:Wait()
-				t = math.min(t + dt, lowerTime)
-				local alpha = 1 - (1 - t / lowerTime) ^ 2 -- ease-out
-				local footNow = knee:Lerp(footTarget, alpha)
-				placeSegment(leg.lower, knee, footNow, legThicknessLower)
-				drawOtherLegs(leg)
-			end
-			leg.foot = footTarget
-			leg.finalHip, leg.finalKnee = hip, knee
-			leg.stepFrom, leg.stepTo = leg.foot, leg.foot
-			placeSegment(leg.lower, knee, leg.foot, legThicknessLower)
-		end
-		leg.grown = true
-	end
-
-	-- settle: now that every leg has finished growing and its foot has
-	-- touched down wherever stage 2's straight-down reach happened to
-	-- land, each foot swings from that touch-down point into wherever it
-	-- should actually plant for a real stance (accounting for
-	-- FOOT_SPREAD_FRAC's outward stance offset, which stage 2 above
-	-- doesn't apply). MimicFuse starts pushing the body up the instant
-	-- its own LEGS_SPROUT_TIME elapses (see that script), so this plays
-	-- out while the body is already rising — reads as the legs settling
-	-- into their footing as the mimic pushes itself upright.
+	-- rise: every foot is down, and the Mimic behaviour now pushes the
+	-- body up over BODY_RISE_TIME. The feet stay on what they landed on
+	-- and the same IK straightens each leg under the rising hip.
+	-- Hips stay on the identity layout here too, while the body rights
+	-- itself; the steady-state loop below takes over from the real
+	-- orientation once it's standing.
 	do
-		local touchedDownFoot = {}
-		for _, leg in ipairs(legs) do
-			touchedDownFoot[leg] = leg.foot
-		end
+		local riseTime = MimicConfig.BODY_RISE_TIME or 0.6
 		local t = 0
-		while t < SETTLE_TIME do
+		while t < riseTime do
 			if not mimic:GetAttribute("MimicActive") then legsFolder:Destroy() return end
 			local dt = RS.RenderStepped:Wait()
-			t = math.min(t + dt, SETTLE_TIME)
-			local alpha = t / SETTLE_TIME
+			t += dt
 			for _, leg in ipairs(legs) do
-				local hipWorld = (mimic.CFrame * CFrame.new(leg.hipLocal)).Position
-				local hip = hipWorld - Vector3.new(0, bodySize * 0.15, 0)
-				local outward = worldOutward(leg.hipLocal)
-				local plantPoint = clampFootRadius(hipWorld + outward * footSpreadDist)
-				local restFoot = Vector3.new(plantPoint.X, surfaceYAt(plantPoint.X, plantPoint.Z), plantPoint.Z)
-				leg.foot = touchedDownFoot[leg]:Lerp(restFoot, alpha)
-				leg.stepFrom, leg.stepTo = leg.foot, leg.foot
-				local knee = solveKnee(hip, leg.foot, outward, legSegLen)
+				trackFoot(leg)
+				local hip = identityHip(leg)
+				local knee = solveKnee(hip, leg.foot, flatOutward(leg), legSegLen)
 				placeSegment(leg.upper, hip, knee, legThicknessUpper)
 				placeSegment(leg.lower, knee, leg.foot, legThicknessLower)
 			end
+			publishFootY()
 		end
 	end
 
@@ -958,6 +1096,7 @@ local function attachLegs(mimic)
 		local dt = RS.RenderStepped:Wait()
 		updateFeet(dt)
 		placeLegSegments()
+		publishFootY()
 	end
 
 	-- retract: MimicActive just went false — reverted back to an

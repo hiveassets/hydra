@@ -5,6 +5,15 @@
     Properties:
         Disabled: false
         RunContext: Enum.RunContext.Legacy
+    Exported: 2026-09-24 20:25:13
+]]
+--[[
+    PetMimicHandler (Script)
+    Path: ServerScriptService
+    Parent: ServerScriptService
+    Properties:
+        Disabled: false
+        RunContext: Enum.RunContext.Legacy
     Exported: 2026-09-23 02:07:54
 ]]
 --[[

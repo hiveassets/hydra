@@ -2,6 +2,12 @@
     BoardConfig (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
+    Exported: 2026-09-24 20:25:14
+]]
+--[[
+    BoardConfig (ModuleScript)
+    Path: ReplicatedStorage
+    Parent: ReplicatedStorage
     Exported: 2026-09-23 02:07:55
 ]]
 --[[
@@ -149,7 +155,7 @@ BoardConfig.SPECIAL_MIN_BALLS = 2       -- board must already have this many bal
 --   magnet    3      ← step 2, live
 --   splitter  2      ← step 3, live
 --   merger    1      ← step 4, live
---   mimic     0.05   ← step 5
+--   mimic     0.05   ← step 5, live
 --
 -- The radiant variants (step 6) aren't kinds of their own; they're the
 -- radiant overlay rolling on top of one of these, gated by
@@ -157,7 +163,7 @@ BoardConfig.SPECIAL_MIN_BALLS = 2       -- board must already have this many bal
 BoardConfig.SPECIAL_WEIGHTS = {
 	bomb = 5,
 	magnet = 3,
-	mimic = 0,
+	mimic = 0.05,
 	splitter = 2,
 	merger = 1,
 }
@@ -479,6 +485,114 @@ BoardConfig.MERGER = {
 	CENTER_PULL_MAX_ACCEL = 5,
 }
 
+-- ── mimic ─────────────────────────────────────────────────────────────
+-- The numbers more than one script reads. Everything that only the
+-- Mimic behaviour cares about (walk speeds, hunt radius, balance
+-- recovery...) stays in that module, lifted from MimicFuse unchanged.
+BoardConfig.MIMIC = {
+	-- How long it passes for an ordinary orb before waking. The server
+	-- reads this too: a wake reported sooner is refused.
+	WAKE_DELAY = 5,
+
+	-- MimicFuse and MimicLegsClient each had their own copy of these two,
+	-- with a comment on both saying they MUST match. Now there's one.
+	LEG_LIFT_FRAC = 1.3,    -- how high the body rides once standing, as a fraction of its size
+
+	-- The sprout. A new leg starts every LEG_SPROUT_INTERVAL seconds; each
+	-- one grows its upper segment, then its lower one. LEGS_SPROUT_TIME —
+	-- how long the body holds still before it rises — is worked out from
+	-- these just below this table, so it always covers the last foot
+	-- landing: (LEG_COUNT - 1) x interval + upper + lower = 1.5s.
+	LEG_COUNT = 3,
+	LEG_SPROUT_INTERVAL = 0.5,
+	LEG_UPPER_GROW_TIME = 0.25,
+	LEG_LOWER_GROW_TIME = 0.25,
+	-- Then the body pushes itself up onto its planted feet over this long.
+	-- MimicLegsClient holds the feet where they landed for the same span.
+	BODY_RISE_TIME = 0.6,
+
+	-- A dormant mimic this far below the platform, or this far from the
+	-- centre, is past waking. Falling is the board's business (it splits
+	-- like an orb); drifting out just means it never wakes.
+	WAKE_MIN_Y = -5,
+	MAX_RADIUS = 55, -- an AWAKE one this far out turns back into a plain orb
+
+	-- The eat: the prey floats up into the body under a magenta fade,
+	-- then flashes out. Same colour the old mimicAbsorb used.
+	EAT_TIME = 0.3,
+	EAT_COLOR = Color3.fromRGB(255, 0, 255),
+	-- How hard the prey is steered into the body over EAT_TIME. The orb
+	-- stays a physics body; this curve goes from no steering (it carries
+	-- on rolling, bouncing, falling as it was) to total (it arrives on
+	-- time). Exponential In leaves it almost alone for the first half and
+	-- then takes it hard, so most of the pull happens late. Raise EAT_TIME
+	-- if it reads as a snap rather than a pull.
+	EAT_EASING_STYLE = Enum.EasingStyle.Exponential,
+	EAT_EASING_DIRECTION = Enum.EasingDirection.In,
+
+	-- It only wakes once it's actually resting on something. Waking in
+	-- mid-air — still bouncing, or knocked up — measured the "floor" from
+	-- wherever it happened to be, and it stood on the air from then on.
+	-- Same gate the splitter and merger use: vertical speed under
+	-- GROUNDED_VY for GROUNDED_FRAMES frames spanning GROUNDED_TIME.
+	GROUNDED_VY = 1.5,
+	GROUNDED_FRAMES = 2,
+	GROUNDED_TIME = 1 / 30,
+
+	-- How far down it looks for ground from wherever its body is right
+	-- now. The original looked from where it first woke, over a short
+	-- reach, and fell back to "the floor is where I am" when it missed —
+	-- the other half of standing on the air. Nothing within this reach
+	-- means there's nothing under it: it stops holding itself up and
+	-- falls.
+	GROUND_RAY_REACH = 300,
+
+	-- ── a thrown orb knocks it back ───────────────────────────────────
+	-- Carried orbs pass through everything now, so walking an orb into a
+	-- mimic doesn't shove it any more. Throwing one at it does instead:
+	-- an orb that hits it within KNOCK_WINDOW seconds of leaving your
+	-- hands, still moving at KNOCK_MIN_ORB_SPEED or more, knocks it back
+	-- along the orb's path, and it flashes magenta. One knock per throw.
+	--
+	-- It's physics, start to finish. The hit is a real impulse on the
+	-- body — KNOCK_IMPULSE_PER_SIZE per point of the ORB's size — so the
+	-- same orb sends a small, light mimic much further than a big one.
+	-- The speed that gives is capped at KNOCK_MAX_SPEED.
+	--
+	-- After that, what slows it down is its legs. Its walk servo never
+	-- turns off; while it's sliding from a knock, the force it can put
+	-- down drops to what KNOCK_SLIP_GRIP (studs/s², per unit of its mass)
+	-- allows, so it decelerates steadily while it scrambles to get back to
+	-- walking. Full grip comes back once it's moving within
+	-- KNOCK_RECOVERED_SPEED of what it's trying to do. Lower grip = a
+	-- longer skid; the distance is roughly speed² ÷ (2 × grip).
+	KNOCK_WINDOW = 3,
+	KNOCK_MIN_ORB_SPEED = 10,
+	KNOCK_IMPULSE_PER_SIZE = 60,
+	KNOCK_MAX_SPEED = 80,
+	KNOCK_SLIP_GRIP = 60,
+	KNOCK_RECOVERED_SPEED = 2,
+	KNOCK_COLOR = Color3.fromRGB(255, 0, 255),
+	KNOCK_FLASH_TRANSPARENCY = 0.25,
+	KNOCK_FLASH_TIME = 0.5,
+
+	-- A small screen shake on every hit, the same whatever the orb or the
+	-- mimic — feedback that the throw landed, not a measure of how hard.
+	-- For scale: the smallest bomb (size 3) shakes at about 0.3, so this
+	-- sits just under it. Uses the bomb's shake (BoardEffects.shake), so a
+	-- bomb going off at the same moment simply wins.
+	KNOCK_SHAKE_AMPLITUDE = 0.25, -- roughly the peak camera offset, in studs
+	KNOCK_SHAKE_TIME = 0.2,
+	KNOCK_SHAKE_FREQUENCY = 25,   -- a quick rattle rather than a heave
+	KNOCK_SHAKE_ROTATION = 0.8,   -- degrees of camera roll per stud of offset
+}
+
+-- Read by the Mimic behaviour (and the pet mimic): hold still this long
+-- while the legs come out.
+BoardConfig.MIMIC.LEGS_SPROUT_TIME = (BoardConfig.MIMIC.LEG_COUNT - 1) * BoardConfig.MIMIC.LEG_SPROUT_INTERVAL
+	+ BoardConfig.MIMIC.LEG_UPPER_GROW_TIME
+	+ BoardConfig.MIMIC.LEG_LOWER_GROW_TIME
+
 -- ── emerging results ──────────────────────────────────────────────────
 -- An orb that comes out of another orb instead of the spawn point: the
 -- two halves of a split today, a merge result in step 4. Lifted from
@@ -705,6 +819,12 @@ BoardConfig.SOUNDS = {
 	-- The merger. Played at the merger's centre, where both orbs are
 	-- headed — the same place the old positional relay played it.
 	merge = { id = "rbxassetid://86932397872773", volume = 1 },
+
+	-- The mimic. The wake cue is the collapse alarm, reused, played flat
+	-- as the body starts to rise; the revert cue is the bomb-defuse sound,
+	-- played on the orb it turns back into.
+	mimicWake = { id = "rbxassetid://12221990", volume = 0.4 },
+	mimicRevert = { id = "rbxassetid://12222152", volume = 1 },
 }
 
 -- ── collapse visuals (client-side, but shared so one file owns tuning) ─
