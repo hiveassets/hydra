@@ -2,6 +2,12 @@
     BoardConfig (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
+    Exported: 2026-09-25 02:23:34
+]]
+--[[
+    BoardConfig (ModuleScript)
+    Path: ReplicatedStorage
+    Parent: ReplicatedStorage
     Exported: 2026-09-24 20:25:14
 ]]
 --[[
@@ -159,7 +165,7 @@ BoardConfig.SPECIAL_MIN_BALLS = 2       -- board must already have this many bal
 --
 -- The radiant variants (step 6) aren't kinds of their own; they're the
 -- radiant overlay rolling on top of one of these, gated by
--- BoardRules.radiantSupported.
+-- BoardRules.radiantSupported, which reads RADIANT_BEHAVIOUR below.
 BoardConfig.SPECIAL_WEIGHTS = {
 	bomb = 5,
 	magnet = 3,
@@ -263,8 +269,8 @@ BoardConfig.BOMB = {
 	-- this number.
 	VFX_SCALE = 1,
 	VFX_TIME = 0.3,
-	VFX_START = Color3.fromRGB(127, 68, 0),
-	VFX_END = Color3.fromRGB(127, 0, 0),
+	VFX_START = Color3.fromRGB(255, 136, 0), -- full brightness; these used to be halved to tame the neon
+	VFX_END = Color3.fromRGB(255, 0, 0),
 
 	FLASH_SCALE = 0.6,
 	FLASH_TIME = 0.1,
@@ -293,24 +299,53 @@ BoardConfig.BOMB = {
 	-- curve flattens exactly where the bombs get interesting.
 	--
 	--   size    3 → 0.30      size   50 → 2.65
-	--   size    5 → 0.40      size  100 → 5.00 (capped)
-	--   size   20 → 1.15      size  400 → 5.00 (capped)
+	--   size    5 → 0.40      size  100 → 5.15
+	--   size   20 → 1.15      size  400 → 20.15
 	--
 	-- The low end is within a few hundredths of where the root curve had
 	-- it, so what felt good there is unchanged; everything from 10 up
 	-- hits harder, and much harder past 50.
 	--
-	-- Linear has to saturate somewhere, and with these numbers that's
-	-- size 97. Past it every bomb shakes identically. Raising SHAKE_MAX
-	-- moves that line — at 5 studs the camera is already being thrown a
-	-- long way, so if size 100 and size 400 need to feel different,
-	-- that's the number to push rather than SHAKE_PER_SIZE.
+	-- No ceiling. There used to be one at 5 studs (size 97), past which
+	-- every bomb shook the same; now a bigger bomb always shakes harder.
+	-- The radiant splitter and merger set their own small shake outright
+	-- (RADIANT_SPLITTER.BLAST_SHAKE_AMPLITUDE) and aren't on this curve.
 	SHAKE_BASE = 0.15,     -- floor, so a tiny bomb still registers
 	SHAKE_PER_SIZE = 0.05, -- studs per unit of size — the main tuning knob
-	SHAKE_MAX = 5,         -- ceiling; also where the linear curve goes flat
 	SHAKE_TIME = 0.45,
 	SHAKE_FREQUENCY = 20, -- noise cycles a second: higher is a rattle, lower is a heave
 	SHAKE_ROTATION = 0.8, -- degrees of camera roll per stud of offset
+}
+
+-- ── hitstop ───────────────────────────────────────────────────────────
+-- Every orb a blast reaches freezes where it is for a beat, trembling,
+-- and THEN takes the hit — the fighting-game trick that makes an impact
+-- read as heavy. Every explosion does it: a plain bomb, a radiant bomb,
+-- and the radiant splitter's and merger's send-offs.
+--
+-- How long it holds and how hard it trembles both come from the push
+-- that orb is about to take — the blast's impulse after falloff, so the
+-- orb at the centre of a big bomb freezes longest and one at the edge
+-- barely at all. That push is measured against FULL_IMPULSE (a size-20
+-- bomb's push at point-blank) and bent by CURVE: under 1 lifts the
+-- small end, so a little bomb still visibly catches.
+--
+--   push                        freeze   tremble
+--   size-5 bomb, point-blank    0.11s    0.25 studs
+--   size-5 bomb, half radius    0.08s    0.19
+--   size-20 bomb, point-blank   0.18s    0.45 (the maximum)
+--
+-- While frozen it's anchored with collision off, so nothing else can
+-- knock it about; its speed from before the blast is kept and handed
+-- back, with the push on top, when it lets go. The tremble eases out as
+-- the freeze runs down.
+BoardConfig.HITSTOP = {
+	FULL_IMPULSE = 100000,
+	CURVE = 0.5,
+	MIN_TIME = 0.03,
+	MAX_TIME = 0.18,
+	MIN_SHAKE = 0.05, -- studs
+	MAX_SHAKE = 0.45,
 }
 
 -- ── magnet ────────────────────────────────────────────────────────────
@@ -355,7 +390,19 @@ BoardConfig.MAGNET = {
 	-- arrival size to nothing, the same for every size — a bigger magnet
 	-- loses more studs a second rather than lasting longer.
 	SHRINK_TIME = 2,
-	PULL_ACCEL = 10, -- per stud of the magnet's CURRENT size, per second, with no distance falloff
+	-- Per stud of the magnet's CURRENT size, per second, no distance falloff.
+	--
+	-- 20, not MagnetFuse's 10, and the formula is otherwise identical. The
+	-- same number pulls noticeably weaker on a local board, because the
+	-- old one wasn't really applying it as written. The server added the
+	-- pull to its OWN copy of each orb's velocity, which only caught up
+	-- with the real physics now and then, and wrote that back over the
+	-- top — so friction with the platform, which on your own machine eats
+	-- tens of studs/s² off an orb sliding along it, mostly never got a
+	-- say. Locally the physics is honest and friction takes its cut every
+	-- step. Doubling it is a first guess at where it felt right; this is
+	-- the number to tune, and RADIANT_MAGNET.PULL_ACCEL keeps its 3x.
+	PULL_ACCEL = 20,
 
 	-- The shine that replaces the magnet once it turns invisible. Its
 	-- size is three curves multiplied together: a one-shot pop in, a
@@ -623,6 +670,269 @@ BoardConfig.RADIANT_CHANCE = 0.05
 BoardConfig.RADIANT_COOLDOWN = 10
 BoardConfig.RADIANT_RESPAWN_DELTAS = { -1, 2 } -- a radiant that falls comes back 1 smaller or 2 bigger
 
+-- Which kinds have a radiant form, and the behaviour module that runs it
+-- (ReplicatedStorage → Behaviours → <name>). A radiant special runs this
+-- INSTEAD of its stock module, never as well, exactly as the old
+-- Radiant<Kind>Fuse replaced <Kind>Fuse.
+--
+-- This table is the whole switch. BoardRules.radiantSupported reads it,
+-- so a kind listed here can roll radiant, be summoned radiant, and be
+-- stashed and deployed radiant; a kind missing from it never is. A plain
+-- orb is always radiant-capable and isn't listed, because its radiance
+-- is only a colour loop the board runs itself. The mimic has no radiant
+-- form and never had one.
+BoardConfig.RADIANT_BEHAVIOUR = {
+	bomb = "RadiantBomb",
+	magnet = "RadiantMagnet",
+	splitter = "RadiantSplitter",
+	merger = "RadiantMerger",
+}
+
+-- The six stops a radiant orb's colour loops through, 3s for the round
+-- trip. The radiant magnet's idle colour is the same loop.
+BoardConfig.RADIANT_COLORS = {
+	Color3.fromRGB(255, 0, 0),
+	Color3.fromRGB(255, 255, 0),
+	Color3.fromRGB(0, 255, 0),
+	Color3.fromRGB(0, 255, 255),
+	Color3.fromRGB(0, 0, 255),
+	Color3.fromRGB(255, 0, 255),
+}
+BoardConfig.RADIANT_CYCLE_TIME = 3
+
+-- ── radiant bomb ──────────────────────────────────────────────────────
+-- Every number lifted from RadiantBombFuse unchanged. Against a plain
+-- bomb it differs in five ways:
+--
+--   * The fuse is twice as long: the same two phases with twice the
+--     ticks each (5s), and the last TICK_SPEEDUP_WINDOW seconds speed up
+--     to TICK_SPEEDUP_MAX, the tick sound's pitch and the flicker's
+--     cadence together. That brings the real fuse in at about 4.6s.
+--   * The flicker's lit tick is a rainbow hue rather than red. The hue
+--     only moves while a tick is lit, so it doesn't race ahead unseen.
+--   * Halfway through, it shrinks to nothing, goes invisible, floats up
+--     off the platform and drags every plain orb up after it until it
+--     goes off. See PULL_*.
+--   * The blast reaches exactly as far as a plain bomb's, but its push
+--     grows exponentially with size: IMPULSE_GROWTH per size above
+--     SIZE_REF. Left alone that curve dips UNDER a plain bomb's between
+--     about size 2 and 20 (a 10 would push half as hard), so a radiant
+--     bomb takes whichever of the two is bigger: exactly a plain bomb's
+--     push up to about 20, then it runs away — a 30 about 2.7x, a 50
+--     about 26x.
+--   * The explosion is a rainbow fireball and a white flash, with its
+--     own louder boom.
+BoardConfig.RADIANT_BOMB = {
+	OFF_COLOR = Color3.fromRGB(27, 41, 53), -- a plain bomb's own; only the lit tick is rainbow
+	PHASES = {
+		{ gap = 0.125, n = 32 },
+		{ gap = 0.0625, n = 16 },
+	},
+	TICK_SPEEDUP_WINDOW = 2, -- the last this-many seconds of the base fuse...
+	TICK_SPEEDUP_MAX = 1.5,  -- ...ramp exponentially up to this speed
+
+	-- The flash tick's hue: a full turn per this much LIT time. Each bomb
+	-- starts at its own random point on the wheel.
+	FLASH_HUE_CYCLE_TIME = 1.5,
+
+	-- the blast
+	RADIUS_PER_SIZE = 6,     -- identical to a plain bomb's
+	IMPULSE_PER_SIZE = 5000, -- ...and this is a plain bomb's too, used as the baseline below
+	SIZE_REF = 1.5,          -- the size at which the two curves agree
+	IMPULSE_GROWTH = 1.15,   -- per size above SIZE_REF
+	-- 1, not the original's 0.5: it had the same units bug a plain bomb's
+	-- fireball had, drawing a sphere half the size of the blast. See
+	-- BOMB.VFX_SCALE; that one was fixed in step 1.
+	VFX_SCALE = 1,
+	VFX_TIME = 0.3,
+	FLASH_SCALE = 0.6,
+	FLASH_TIME = 0.1,
+
+	-- ── the halfway pull ──────────────────────────────────────────────
+	-- Fires at the midpoint of the real (sped-up) fuse, less half the
+	-- shrink, so the shrink straddles the middle.
+	PULL_SHRINK_TIME = 1.5,
+	PULL_ACCEL = 32, -- per stud of the bomb's LEDGER size, per second, no distance falloff
+	-- ...and it builds as the bomb floats. On its own, PULL_ACCEL x size is
+	-- weaker than gravity for anything under about size 6 (a size 3 pulls
+	-- at 96 studs/s², gravity is 196), so a small radiant bomb floated off
+	-- and left the orbs it was meant to be hauling on the floor. On top of
+	-- it, the pull gains up to PULL_RAMP_GRAVITY x gravity, from nothing
+	-- when the float starts to all of it at detonation, eased in
+	-- (PULL_RAMP_STYLE, In) so the start of the float is unchanged and it
+	-- takes hold as it climbs. At the end every radiant bomb out-pulls
+	-- gravity by at least half again, so anything it has hold of comes up
+	-- with it.
+	PULL_RAMP_GRAVITY = 1.5,
+	PULL_RAMP_STYLE = Enum.EasingStyle.Exponential,
+
+	-- Keeping a collapsing sphere sane while it's still a physics body:
+	-- it never shrinks below PULL_MIN_SIZE (a near-zero collision shape
+	-- is what the solver flings across the map), its mass is held
+	-- constant as it shrinks (density rises as volume falls, capped at
+	-- Roblox's ceiling), and friction goes up and bounce goes to nothing.
+	PULL_MIN_SIZE = 0.75,
+	PULL_MAX_DENSITY = 100,
+	PULL_FRICTION = 2,
+	PULL_FRICTION_WEIGHT = 100,
+	PULL_ELASTICITY = 0,
+	PULL_ELASTICITY_WEIGHT = 100,
+
+	-- Floating. Gravity is cancelled and replaced by thrust toward a
+	-- straight-up PULL_RISE_SPEED, against linear drag PULL_DRAG, all
+	-- ramped in from nothing over LIFT_RAMP_TIME. The target speed scales
+	-- with the bomb's size, size / SIZE_REF, clamped to
+	-- LIFT_SCALE_MIN..MAX — which in practice is the maximum for anything
+	-- from size 4 up.
+	--
+	-- The original scaled it by the bomb's density too, against
+	-- LIFT_REF_DENSITY. That worked there because BallManager never gave a
+	-- bomb the size-scaled density orbs get, so every bomb had the
+	-- template's. ClientBoard gives every kind that density, which falls
+	-- steeply with size, so the density term shrank the lift as bombs got
+	-- BIGGER: about 1 at size 5, 0.55 at size 10, the 0.5 floor from 11
+	-- up. And because the gravity cancellation ramps in with the thrust,
+	-- at 0.55 it takes about 1.6s just to leave the ground — the whole
+	-- length of the pull. At 2.5 it's off the floor in about 0.6s.
+	-- Size alone gives back what the original actually did.
+	PULL_RISE_SPEED = 48,
+	PULL_DRAG = 2,
+	LIFT_RAMP_TIME = 1,
+	LIFT_SCALE_MIN = 0.5,
+	LIFT_SCALE_MAX = 2.5,
+
+	-- The shine it turns into: pops in at 3x, settles, wobbles, and eases
+	-- to nothing on the instant the fuse runs out.
+	PULL_HUE_CYCLE_TIME = 3,
+	SHINE_SCALE = 0.8, -- of the ledger size
+	SHINE_OSC_MIN = 0.9,
+	SHINE_OSC_MAX = 1.1,
+	SHINE_OSC_HZ = 8,
+	SHINE_ENTRANCE_START = 3,
+	SHINE_ENTRANCE_TIME = 0.5,
+	SHINE_ENTRANCE_STYLE = Enum.EasingStyle.Quad,
+	SHINE_EXIT_TIME = 0.5,
+	SHINE_EXIT_STYLE = Enum.EasingStyle.Exponential,
+
+	-- StashClient refuses to pocket a radiant bomb once this exists on
+	-- it, the same way it refuses a magnet that's Pulling. The name is
+	-- StashData.RADIANT_PULL_LIFT_FORCE's and must stay that.
+	LIFT_FORCE_NAME = "RadiantPullLiftForce",
+}
+
+-- ── radiant magnet ────────────────────────────────────────────────────
+-- Every number lifted from RadiantMagnetFuse unchanged. The rise, the
+-- wander and the telegraph are a plain magnet's (BoardConfig.MAGNET).
+-- What differs:
+--
+--   * Its idle colour is the radiant orb loop, starting at a random
+--     point, and the telegraph wears whatever colour it's showing.
+--   * The pull is three times as strong and lasts three times as long.
+--   * It pulls EVERYTHING on the board, specials included — only
+--     itself and whatever you're holding are spared.
+--   * It doesn't hold still while it pulls. It orbits the middle at its
+--     wander radius, speeding up the whole time, so a big orb caught in
+--     it gets flung rather than just dragged.
+--   * Its shine opens white like a plain magnet's, then cycles rainbow.
+BoardConfig.RADIANT_MAGNET = {
+	PULL_ACCEL = 60,         -- 3x a plain magnet's (see MAGNET.PULL_ACCEL for why that's 20 now)
+	PULL_DURATION = 6,       -- 3x a plain magnet's SHRINK_TIME
+	ORBIT_START_SPEED = 0.5, -- rad/s
+	ORBIT_ACCEL = 0.5,       -- rad/s², for the whole pull
+	ORBIT_EASE_TIME = 1.5,   -- the speed eases in from nothing over this long
+	ORBIT_EASE_STYLE = Enum.EasingStyle.Sine,
+
+	PULL_HUE_CYCLE_TIME = 3,
+	SHINE_SCALE = 1,
+	SHINE_OSC_MIN = 0.9,
+	SHINE_OSC_MAX = 1.1,
+	SHINE_OSC_HZ = 8,
+	SHINE_ENTRANCE_START = 3,
+	SHINE_ENTRANCE_TIME = 0.5,
+	SHINE_ENTRANCE_STYLE = Enum.EasingStyle.Quad,
+	SHINE_EXIT_TIME = 0.5,
+	SHINE_EXIT_STYLE = Enum.EasingStyle.Quad,
+	SHINE_WHITE_TIME = 0.15,
+}
+
+-- ── radiant splitter and merger ───────────────────────────────────────
+-- Every number lifted from RadiantSplitterFuse and RadiantMergerFuse.
+-- Each is its stock counterpart (the same lifecycle, the same grounded
+-- gate, cooldown, convergence and centre pull) with these differences:
+--
+--   * They take anything. Plain orbs, radiant orbs, bombs, magnets that
+--     haven't started pulling, mimics awake or asleep, splitters and
+--     mergers — everything in RADIANT_ABSORBS. What they never touch is
+--     a radiant SPECIAL, which is also what stops a radiant splitter and
+--     a radiant merger eating each other.
+--   * What goes in decides what comes out. A splitter turns a bomb into
+--     three bombs; a merger turns two mimics into one mimic. The merger
+--     only takes a pair of the SAME kind.
+--   * They make value. The splitter's three results are each ⅔ the size
+--     of what went in (double, in total); the merger's one result is the
+--     two sizes added plus a third on top.
+--   * Results can come out radiant. Each of the splitter's rolls
+--     RESULT_RADIANT_CHANCE on its own; the merger's rolls once. If what
+--     went in was radiant, the results always are. Either way only for a
+--     kind that has a radiant form (so never a mimic).
+--   * The merger lasts twice as long: each merge costs a TENTH of the
+--     size it was born at, not a fifth.
+--   * They're rainbow from the moment they appear — the splitter's wheel
+--     turns backwards, the merger's forwards — and they hum.
+--   * When the budget runs out they go off: a real blast, BLAST_RADIUS_SIZE
+--     bombs' worth of reach with BLAST_IMPULSE_SIZE bombs' worth of push,
+--     whatever size the special started at.
+BoardConfig.RADIANT_ABSORBS = {
+	ball = true,
+	bomb = true,
+	magnet = true,
+	mimic = true,
+	splitter = true,
+	merger = true,
+}
+
+-- A magnet can be taken until its pull starts, which the client knows
+-- from its Pulling attribute and the server works out from the clock:
+-- WANDER_START_DELAY + WANDER_TIME after it launched. The server allows
+-- this much on top, to cover the report being in flight and a magnet
+-- that came out of a split and launched a convergence late.
+BoardConfig.RADIANT_MAGNET_TAKE_SLACK = 1
+
+local function extend(base, overrides)
+	local copy = table.clone(base)
+	for key, value in pairs(overrides) do
+		copy[key] = value
+	end
+	return copy
+end
+
+local RADIANT_ABSORBER_SHARED = {
+	HUE_CYCLE_TIME = 3,
+	BLAST_RADIUS_SIZE = 5,
+	BLAST_IMPULSE_SIZE = 10,
+	-- A send-off rather than a weapon, so barely any camera shake: a
+	-- smallest-bomb shake is about 0.3.
+	BLAST_SHAKE_AMPLITUDE = 0.08,
+	BLAST_SHAKE_TIME = 0.25,
+	-- 1, not the original's 0.5 — the same units fix as RADIANT_BOMB's
+	VFX_SCALE = 1,
+	VFX_TIME = 0.3,
+	FLASH_SCALE = 0.6,
+	FLASH_TIME = 0.1,
+}
+
+BoardConfig.RADIANT_SPLITTER = extend(BoardConfig.SPLITTER, extend(RADIANT_ABSORBER_SHARED, {
+	RESULT_COUNT = 3,
+	RESULT_RADIANT_CHANCE = 0.25, -- each of the three, on its own
+	HUE_DIRECTION = -1,           -- backwards round the wheel
+}))
+
+BoardConfig.RADIANT_MERGER = extend(BoardConfig.MERGER, extend(RADIANT_ABSORBER_SHARED, {
+	SHRINK_FRACTION = 1 / 10,     -- of its born size, per merge: twice the stock merger's life
+	RESULT_RADIANT_CHANCE = 0.5,  -- its one result
+	HUE_DIRECTION = 1,
+}))
+
 -- ── selling ───────────────────────────────────────────────────────────
 BoardConfig.SELL_MULTIPLIERS = {
 	ball = 1,
@@ -825,6 +1135,19 @@ BoardConfig.SOUNDS = {
 	-- played on the orb it turns back into.
 	mimicWake = { id = "rbxassetid://12221990", volume = 0.4 },
 	mimicRevert = { id = "rbxassetid://12222152", volume = 1 },
+
+	-- The radiant bomb. Its flicker tick is the plain bomb's, pitched up
+	-- over the last two seconds; the pull cue and the boom are its own.
+	radiantBombPull = { id = "rbxassetid://126727806160402", volume = 1.1, speed = 0.9 },
+	radiantBombBoom = { id = "rbxassetid://120604429155099", volume = 2 },
+
+	-- The radiant magnet's pull cue. Its spawn cue is the plain magnet's.
+	radiantMagnetPull = { id = "rbxassetid://117163159149291", volume = 1 },
+
+	-- The radiant splitter and merger: a low hum for as long as either is
+	-- on the board, and the blast they go out on.
+	radiantAbsorberHum = { id = "rbxassetid://139726170556835", volume = 0.1 },
+	radiantAbsorberBoom = { id = "rbxassetid://137086138620952", volume = 0.9 },
 }
 
 -- ── collapse visuals (client-side, but shared so one file owns tuning) ─

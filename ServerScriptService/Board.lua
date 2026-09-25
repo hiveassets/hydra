@@ -2,6 +2,12 @@
     Board (ModuleScript)
     Path: ServerScriptService
     Parent: ServerScriptService
+    Exported: 2026-09-25 02:23:33
+]]
+--[[
+    Board (ModuleScript)
+    Path: ServerScriptService
+    Parent: ServerScriptService
     Exported: 2026-09-24 20:25:13
 ]]
 --[[
@@ -729,6 +735,9 @@ function Board:onSplit(splitterId, ballId)
 	if not (splitter and splitter.kind == "splitter" and self:isLive(splitter)) then
 		return false, "not a live splitter"
 	end
+	if splitter.radiant then
+		return self:_radiantSplit(splitterId, splitter, ballId)
+	end
 	local ball = self:entry(ballId)
 	if not (ball and ball.kind == "ball" and self:isLive(ball)) then
 		return false, "not a live orb"
@@ -803,6 +812,9 @@ function Board:onMerge(mergerId, idA, idB)
 	if idA == idB then
 		return false, "the same orb twice"
 	end
+	if merger.radiant then
+		return self:_radiantMerge(mergerId, merger, idA, idB)
+	end
 	local a, b = self:entry(idA), self:entry(idB)
 	if not (a and a.kind == "ball" and self:isLive(a)) or not (b and b.kind == "ball" and self:isLive(b)) then
 		return false, "not two live orbs"
@@ -836,6 +848,164 @@ function Board:onMerge(mergerId, idA, idB)
 		emergeCount = 1,
 		growingUntil = t + Config.MERGER.CONVERGE_TIME + Config.GROW_TIME,
 	})
+
+	self:ensureBall()
+	self:_enforceCap()
+	return true
+end
+
+-- ── the radiant splitter and merger ──────────────────────────────────
+-- Same ops as their stock counterparts (SPLIT and MERGE, ids only), and
+-- the same handlers above hand them here when the special doing the
+-- taking is radiant. What they may take, and what comes back out, is
+-- where they differ — see BoardConfig.RADIANT_SPLITTER's header.
+--
+-- These create more value than anything else in the game: a radiant
+-- split doubles what went in, a radiant merge adds a third, and either
+-- can turn out radiant results worth three times as much again. So
+-- everything taken is held to the strict predicate (isLive), and the
+-- results' sizes, kinds, colours and radiance all come from here.
+
+-- Whether a radiant splitter or merger may take this entry. Returns
+-- true, or false and a reason.
+function Board:_radiantTarget(entry)
+	if not entry then
+		return false, "not on this board"
+	end
+	if not Rules.radiantCanTake(entry.kind, entry.radiant) then
+		return false, ("a radiant absorber can't take a %s%s"):format(entry.radiant and "radiant " or "", entry.kind)
+	end
+	if entry.kind == "magnet" then
+		-- A magnet rises straight up through the middle of the platform —
+		-- exactly where a splitter sits — and it's through before the fall
+		-- guard's grace (isLive) has passed. The originals caught it on the
+		-- way through, and the grace guards against a fall claimed too
+		-- early, which isn't what this is. So a magnet only has to be on
+		-- the board.
+		if not self:isOnBoard(entry) then
+			return false, "not on the board yet"
+		end
+		-- ...and not pulling. That's a live hazard, and has to be waited
+		-- out — the same window the degausser has. The server can't see
+		-- the Pulling attribute; it knows when the pull starts from the
+		-- clock, and allows for the report being in flight.
+		if now() > entry.launchAt + Rules.magnetPullStartsAfter() + Config.RADIANT_MAGNET_TAKE_SLACK then
+			return false, "the magnet is already pulling"
+		end
+		return true
+	end
+	if not self:isLive(entry) then
+		return false, "not live"
+	end
+	return true
+end
+
+-- Queues what comes out, as one SPAWN. Each result rolls its own
+-- radiance (unless what went in was radiant, which makes them all
+-- radiant), and only a kind with a radiant form can roll it at all, so a
+-- mimic never comes out radiant. The client holds them until its
+-- convergence has played out, keyed by `emergeFrom`.
+function Board:_radiantResults(kind, size, count, sourceRadiant, chance, color, emergeFrom, growingUntil)
+	local rand = self:_rand()
+	local t = now()
+	local batch = {}
+	for _ = 1, count do
+		local radiant = Rules.radiantSupported(kind)
+			and (sourceRadiant or rand() < chance)
+		self:queueSpawn(size, {
+			kind = kind,
+			forceBall = true, -- a result is never a fresh roll; only the roll above
+			radiant = radiant,
+			color = color,
+			at = t,
+			whilePaused = true,
+			emergeFrom = emergeFrom,
+			emergeCount = count,
+			growingUntil = growingUntil,
+		}, batch)
+	end
+	if #batch > 0 then
+		self:_send(ToClient.SPAWN, batch)
+	end
+end
+
+function Board:_radiantSplit(splitterId, splitter, targetId)
+	local cfg = Config.RADIANT_SPLITTER
+	local target = self:entry(targetId)
+	local ok, reason = self:_radiantTarget(target)
+	if not ok then
+		return false, reason
+	end
+	if target.size <= cfg.MIN_SPLIT_SIZE then
+		return false, "too small to split"
+	end
+
+	-- The same budget as a stock splitter: 2 per split, spent at 5.
+	local nextSize, spent = Rules.splitterAfterSplit(splitter.size)
+	if spent then
+		self:_forget(splitterId) -- the client is playing its send-off
+	else
+		splitter.size = nextSize
+	end
+
+	self:_forget(targetId) -- converging into the splitter on the client
+
+	-- Three of what went in, each two thirds its size. A bomb makes three
+	-- bombs, a mimic three dormant mimics, a merger three fresh mergers
+	-- with their own budgets.
+	self:_radiantResults(
+		target.kind,
+		Rules.radiantSplitThird(target.size),
+		cfg.RESULT_COUNT,
+		target.radiant,
+		cfg.RESULT_RADIANT_CHANCE,
+		target.color,
+		targetId,
+		now() + cfg.CONVERGE_TIME + Config.GROW_TIME
+	)
+
+	self:ensureBall()
+	self:_enforceCap()
+	return true
+end
+
+function Board:_radiantMerge(mergerId, merger, idA, idB)
+	local cfg = Config.RADIANT_MERGER
+	local a, b = self:entry(idA), self:entry(idB)
+	local ok, reason = self:_radiantTarget(a)
+	if ok then
+		ok, reason = self:_radiantTarget(b)
+	end
+	if not ok then
+		return false, reason
+	end
+	if a.kind ~= b.kind then
+		return false, "a radiant merger only takes a pair of one kind"
+	end
+	if a.size <= cfg.MIN_MERGE_SIZE or b.size <= cfg.MIN_MERGE_SIZE then
+		return false, "too small to merge"
+	end
+
+	local nextSize, spent = Rules.mergerAfterMerge(merger.size, merger.bornSize or merger.size, true)
+	if spent then
+		self:_forget(mergerId)
+	else
+		merger.size = nextSize
+	end
+
+	self:_forget(idA)
+	self:_forget(idB)
+
+	self:_radiantResults(
+		a.kind,
+		Rules.radiantMergeSize(a.size, b.size),
+		1,
+		a.radiant or b.radiant,
+		cfg.RESULT_RADIANT_CHANCE,
+		Rules.mixColor(a.color, a.size, b.color, b.size),
+		idA, -- where the client wrote down the merger's position
+		now() + cfg.CONVERGE_TIME + Config.GROW_TIME
+	)
 
 	self:ensureBall()
 	self:_enforceCap()
@@ -1273,11 +1443,11 @@ function Board:summon(kind, size, count, radiant)
 			table.insert(known, name)
 		end
 		table.sort(known)
-		return false, ("unknown kind '%s' — try one of: %s"):format(tostring(kind), table.concat(known, ", "))
+		return false, ("failed to preform !summon (unknown kind '%s' — try: %s)"):format(tostring(kind), table.concat(known, ", "))
 	end
 
 	if radiant and not Rules.radiantSupported(kind) then
-		return false, ("there's no radiant %s yet"):format(kind)
+		return false, ("failed to preform !summon (there's no radiant %s yet)"):format(kind)
 	end
 
 	count = math.clamp(count or 1, 1, 300)

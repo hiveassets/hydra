@@ -3,7 +3,7 @@
     Path: StarterPlayer → StarterPlayerScripts → PlayerModule → CameraModule → VehicleCamera
     Parent: VehicleCamera
     ⚠️  NESTED SCRIPT: This script is inside another script
-    Exported: 2026-09-24 20:25:15
+    Exported: 2026-09-25 02:23:35
 ]]
 --!nonstrict
 local CameraUtils = require(script.Parent.Parent.CameraUtils)

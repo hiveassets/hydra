@@ -2,6 +2,12 @@
     Bomb (ModuleScript)
     Path: ReplicatedStorage → Behaviours
     Parent: Behaviours
+    Exported: 2026-09-25 02:23:34
+]]
+--[[
+    Bomb (ModuleScript)
+    Path: ReplicatedStorage → Behaviours
+    Parent: Behaviours
     Exported: 2026-09-24 20:25:14
 ]]
 --[[
@@ -69,8 +75,6 @@
 	about its own revert, so this still only reports its own detonation.
 ]]
 
-local Workspace = game:GetService("Workspace")
-local TweenService = game:GetService("TweenService")
 
 local Bomb = {}
 
@@ -111,87 +115,30 @@ local function flicker(ctx)
 	return ctx.alive()
 end
 
--- ── the expanding ball ────────────────────────────────────────────────
+-- ── the fireball and the flash ───────────────────────────────────────
+-- Both drawn by BoardEffects.explosion, which every explosion shares: a
+-- neon fireball that fills the screen while the camera is inside it (so
+-- it still shows when the blast is bigger than the view), and a flash on
+-- top of it that collapses away rather than blinking out.
 local function vfx(ctx, position, blastRadius)
 	local cfg = ctx.config.BOMB
-	local radius = blastRadius * cfg.VFX_SCALE
-
-	local ball = Instance.new("Part")
-	ball.Shape, ball.Anchored, ball.CanCollide, ball.CanQuery =
-		Enum.PartType.Ball, true, false, false
-	ball.Material, ball.Color = Enum.Material.Neon, cfg.VFX_START
-	ball.Size, ball.Position = Vector3.new(1, 1, 1), position
-	ball.Parent = Workspace
-
-	local expand = TweenService:Create(ball,
-		TweenInfo.new(cfg.VFX_TIME, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out),
-		{ Size = Vector3.new(radius, radius, radius) * 2 })
-	-- Kept as its own tween rather than folded into the fade, so the
-	-- orange-to-red shift stays readable instead of being buried by it.
-	local recolor = TweenService:Create(ball,
-		TweenInfo.new(cfg.VFX_TIME * 0.65, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{ Color = cfg.VFX_END })
-	local fade = TweenService:Create(ball,
-		TweenInfo.new(cfg.VFX_TIME * 0.75, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-		{ Transparency = 1 })
-
-	expand:Play()
-	recolor:Play()
-	-- Delayed so the colour shift reads before the fade starts eating it
-	task.delay(cfg.VFX_TIME * 0.25, function()
-		if ball.Parent then
-			fade:Play()
-		end
-	end)
-	expand.Completed:Connect(function()
-		if ball.Parent then
-			ball:Destroy()
-		end
-	end)
-end
-
--- ── the billboard flash ───────────────────────────────────────────────
-local function flash(ctx, position, blastRadius)
-	local cfg = ctx.config.BOMB
-
-	local anchor = Instance.new("Part")
-	anchor.Anchored, anchor.CanCollide, anchor.CanQuery, anchor.Transparency =
-		true, false, false, 1
-	anchor.Size, anchor.Position = Vector3.new(0.1, 0.1, 0.1), position
-	anchor.Parent = Workspace
-
-	local scale = blastRadius * cfg.FLASH_SCALE
-	local gui = Instance.new("BillboardGui")
-	gui.Adornee, gui.Size, gui.AlwaysOnTop = anchor, UDim2.new(scale, 0, scale, 0), true
-	gui.Parent = anchor
-
-	local img = Instance.new("ImageLabel")
-	img.BackgroundTransparency, img.BorderSizePixel = 1, 0
-	img.Size, img.Image = UDim2.new(1, 0, 1, 0), cfg.FLASH_IMAGE
-	img.ImageColor3, img.ImageTransparency = cfg.FLASH_START, 0
-	img.ScaleType, img.ZIndex = Enum.ScaleType.Fit, 10
-	img.Parent = gui
-
-	-- AlwaysOnTop puts this above the composited render that a collapse's
-	-- ColorCorrectionEffect desaturates, so without this attribute it
-	-- would stay full colour while the whole board went grey around it.
-	-- CollapseEffectsClient looks for exactly this.
-	img:SetAttribute("GreyOnCollapse", true)
-
-	task.delay(cfg.FLASH_RECOLOR_AT, function()
-		if img.Parent then
-			img.ImageColor3 = cfg.FLASH_COLOR
-		end
-	end)
-	task.delay(cfg.FLASH_TIME, function()
-		if anchor.Parent then
-			anchor:Destroy()
-		end
-	end)
+	ctx.effects.explosion({
+		position = position,
+		radius = blastRadius * cfg.VFX_SCALE,
+		time = cfg.VFX_TIME,
+		startColor = cfg.VFX_START,
+		endColor = cfg.VFX_END, -- orange to red
+		flashScale = blastRadius * cfg.FLASH_SCALE,
+		flashImage = cfg.FLASH_IMAGE,
+		flashTime = cfg.FLASH_TIME,
+		flashColor = cfg.FLASH_START,
+		flashEndColor = cfg.FLASH_COLOR, -- white pops to yellow...
+		flashRecolorAt = cfg.FLASH_RECOLOR_AT, -- ...this far in
+	})
 end
 
 -- ── detonation ────────────────────────────────────────────────────────
-local function explode(ctx)
+local function explode(ctx, primedBoom)
 	-- Re-checked with no yield since flicker() returned: cheap, and
 	-- assuming a zero-width gap is the kind of thing that turns out not
 	-- to be true exactly once.
@@ -215,13 +162,14 @@ local function explode(ctx)
 	-- this stays one message about one orb.
 	ctx.report(ctx.ops.EXPIRED, ctx.id)
 
-	ctx.effects.soundAt(position, ctx.config.SOUNDS.bombBoom)
+	-- Primed at spawn (see Bomb.start), so it lands on the flash rather
+	-- than a few frames behind it.
+	ctx.effects.playPrimedAt(primedBoom, position, ctx.config.SOUNDS.bombBoom)
 
-	-- Linear in the bomb's size, floored so a small one still registers
-	-- and capped so a huge one stays playable. The SHAKE_ block in
-	-- BoardConfig has the curve and where it flattens.
+	-- Linear in the bomb's size, floored so a small one still registers,
+	-- with no ceiling. The SHAKE_ block in BoardConfig has the curve.
 	ctx.effects.shake(
-		math.min(cfg.SHAKE_MAX, cfg.SHAKE_BASE + size * cfg.SHAKE_PER_SIZE),
+		cfg.SHAKE_BASE + size * cfg.SHAKE_PER_SIZE,
 		cfg.SHAKE_TIME,
 		cfg.SHAKE_FREQUENCY,
 		cfg.SHAKE_ROTATION
@@ -233,7 +181,6 @@ local function explode(ctx)
 	ctx.remove()
 
 	vfx(ctx, position, blastRadius)
-	flash(ctx, position, blastRadius)
 
 	-- Only this player's own orbs, because the folder is local — which
 	-- is the whole rewrite in one line. This used to reach into a shared
@@ -255,13 +202,16 @@ local function explode(ctx)
 			end
 
 			-- Anchored parts sit it out: that's a held orb (it's welded
-			-- into the player's hands) or one mid-stash. An impulse is
-			-- used rather than a velocity so mass still means something —
-			-- a size-300 orb barely shifts where a size-4 one sails.
-			if not other.Anchored and distance <= blastRadius then
+			-- into the player's hands) or one mid-stash — except one that
+			-- another blast has just frozen, which takes this push on top.
+			-- An impulse rather than a velocity, so mass still means
+			-- something — a size-300 orb barely shifts where a size-4 one
+			-- sails — and delivered through the hitstop: frozen for a beat,
+			-- trembling, then thrown (see BoardConfig.HITSTOP).
+			if (not other.Anchored or other:GetAttribute("BlastFrozen")) and distance <= blastRadius then
 				local direction = (distance > 0.01) and (offset / distance) or Vector3.new(0, 1, 0)
 				local falloff = 1 - distance / blastRadius -- full at the centre, nothing at the edge
-				other:ApplyImpulse(direction * size * cfg.IMPULSE_PER_SIZE * falloff)
+				ctx.hitstop(other, direction * size * cfg.IMPULSE_PER_SIZE * falloff)
 
 				-- Inside the same branch on purpose: the flash marks what
 				-- the blast actually pushed, so the two can never
@@ -276,8 +226,11 @@ local function explode(ctx)
 end
 
 function Bomb.start(ctx)
+	-- Readied now so it can play the instant the bomb goes off; see
+	-- BoardEffects.primeSound for why building it then is too late.
+	local primedBoom = ctx.effects.primeSound(ctx.part, ctx.config.SOUNDS.bombBoom)
 	if flicker(ctx) then
-		explode(ctx)
+		explode(ctx, primedBoom)
 	end
 end
 

@@ -2,7 +2,7 @@
     BoardProtocol (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
-    Exported: 2026-09-24 20:25:14
+    Exported: 2026-09-25 02:23:34
 ]]
 --[[
     BoardProtocol (ModuleScript)

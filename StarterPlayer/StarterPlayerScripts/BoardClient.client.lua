@@ -4,6 +4,14 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
+    Exported: 2026-09-25 02:23:34
+]]
+--[[
+    BoardClient (LocalScript)
+    Path: StarterPlayer → StarterPlayerScripts
+    Parent: StarterPlayerScripts
+    Properties:
+        Disabled: false
     Exported: 2026-09-24 20:25:14
 ]]
 --[[
@@ -41,6 +49,14 @@
 ]]
 
 local ClientBoard = require(script.Parent:WaitForChild("ClientBoard"))
+
+-- Roblox's own backpack bar sits along the bottom of the screen, right
+-- where the toolbar is, and ` opens it on top of everything. Nothing in
+-- this game is a Tool, so there's never anything in it — turn it off.
+-- Done here because this script runs once per session, first thing.
+pcall(function()
+	game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+end)
 
 local started = false
 

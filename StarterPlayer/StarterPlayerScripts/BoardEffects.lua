@@ -2,6 +2,12 @@
     BoardEffects (ModuleScript)
     Path: StarterPlayer → StarterPlayerScripts
     Parent: StarterPlayerScripts
+    Exported: 2026-09-25 02:23:34
+]]
+--[[
+    BoardEffects (ModuleScript)
+    Path: StarterPlayer → StarterPlayerScripts
+    Parent: StarterPlayerScripts
     Exported: 2026-09-24 20:25:14
 ]]
 --[[
@@ -80,6 +86,61 @@ function BoardEffects.soundAt(position, sound, pitch)
 
 	-- Ended never fires for a sound that fails to load, so nothing here
 	-- is allowed to outlive a generous timeout.
+	task.delay(10, function()
+		if anchor.Parent then
+			anchor:Destroy()
+		end
+	end)
+end
+
+-- A sound that has to land on an exact frame — an explosion — made
+-- ahead of time and parked on the thing that will go off.
+--
+-- soundAt builds a brand-new Sound at the moment it's needed, and a new
+-- Sound can't start until it has loaded its asset, even one
+-- PreloadAsync has already cached. That costs a few frames, which is
+-- nothing for a sell and very audible under a flash that lasts 0.1s. The
+-- old BombFuse primed its boom at spawn for exactly this reason; the
+-- port dropped it on the assumption that the preload was enough. It
+-- isn't: the preload fetches the asset, the priming readies the Sound.
+--
+-- Returns the Sound; hand it to playPrimedAt when the moment comes. If
+-- the part is destroyed first (sold, stashed), the Sound goes with it.
+function BoardEffects.primeSound(part, sound)
+	local s = Instance.new("Sound")
+	s.Name = "Primed_" .. (sound.id:gsub("%W", ""))
+	s.SoundId = sound.id
+	s.Volume = 0
+	s.Parent = part
+	-- Played silently and stopped, which makes it load now instead of
+	-- when it's wanted.
+	s:Play()
+	s:Stop()
+	s.Volume = sound.volume or 1
+	s.PlaybackSpeed = sound.speed or 1
+	return s
+end
+
+-- Plays a primed Sound where something just happened, moved onto its own
+-- throwaway anchor first so it outlives the part it was waiting on.
+-- Falls back to an ordinary soundAt if the primed one has gone missing.
+function BoardEffects.playPrimedAt(primed, position, fallback)
+	if not (primed and primed.Parent) then
+		if fallback then
+			BoardEffects.soundAt(position, fallback)
+		end
+		return
+	end
+	local anchor = Instance.new("Part")
+	anchor.Anchored, anchor.CanCollide, anchor.CanQuery, anchor.Transparency = true, false, false, 1
+	anchor.Size, anchor.Position, anchor.Parent = Vector3.new(0.1, 0.1, 0.1), position, Workspace
+
+	primed.Parent = anchor
+	primed.TimePosition = 0
+	primed:Play()
+	primed.Ended:Connect(function()
+		anchor:Destroy()
+	end)
 	task.delay(10, function()
 		if anchor.Parent then
 			anchor:Destroy()
@@ -205,6 +266,258 @@ function BoardEffects.flash(position, size, color, alwaysOnTop, startColor, scal
 	shrink.Completed:Connect(function()
 		if anchor.Parent then
 			anchor:Destroy()
+		end
+	end)
+end
+
+-- ── explosions ────────────────────────────────────────────────────────
+-- Every explosion is drawn by BoardEffects.explosion — a plain bomb, a
+-- radiant bomb, and the radiant splitter's and merger's send-offs — so
+-- they can only ever look like each other. Three pieces:
+--
+--   * the fireball: a neon sphere that expands (Exponential Out) and
+--     fades (Quad Out, most of the way at once and then trailing off),
+--     starting a quarter of the way in so its colour reads first;
+--   * the flash: a billboard on top of everything at the centre, which
+--     collapses to nothing (Exponential In) instead of blinking out;
+--   * the inside view. A sphere can't be seen from inside — Roblox only
+--     draws a part's outside faces — so a blast bigger than the view used
+--     to vanish around the camera. While the camera is inside the
+--     fireball, the screen is filled with the fireball's colour at its
+--     transparency instead, which is what being inside a solid ball of
+--     colour looks like, and the flash is drawn again over that fill so
+--     it still reads.
+
+local overlay -- the ScreenGui the inside view draws into, made on first use
+
+local function getOverlay()
+	if overlay and overlay.Parent then
+		return overlay
+	end
+	local player = game:GetService("Players").LocalPlayer
+	local playerGui = player and player:FindFirstChildOfClass("PlayerGui")
+	if not playerGui then
+		return nil
+	end
+	overlay = Instance.new("ScreenGui")
+	overlay.Name = "ExplosionOverlay"
+	overlay.IgnoreGuiInset = true -- matches WorldToViewportPoint, which measures from the true top of the screen
+	overlay.ResetOnSpawn = false
+	overlay.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	overlay.Parent = playerGui
+	return overlay
+end
+
+local function makeFlash(position, scale, image, startColor, time, endColor, recolorAt)
+	local anchor = Instance.new("Part")
+	anchor.Anchored, anchor.CanCollide, anchor.CanQuery, anchor.Transparency =
+		true, false, false, 1
+	anchor.Size, anchor.Position = Vector3.new(0.1, 0.1, 0.1), position
+	anchor.Parent = Workspace
+
+	local gui = Instance.new("BillboardGui")
+	gui.Adornee, gui.Size, gui.AlwaysOnTop = anchor, UDim2.new(scale, 0, scale, 0), true
+	gui.Parent = anchor
+
+	local img = Instance.new("ImageLabel")
+	img.BackgroundTransparency, img.BorderSizePixel = 1, 0
+	img.Size, img.Image = UDim2.new(1, 0, 1, 0), image
+	img.ImageColor3, img.ImageTransparency = startColor, 0
+	img.ScaleType, img.ZIndex = Enum.ScaleType.Fit, 10
+	img.Parent = gui
+	img:SetAttribute("GreyOnCollapse", true)
+
+	if endColor and recolorAt then
+		task.delay(recolorAt, function()
+			if img.Parent then
+				img.ImageColor3 = endColor
+			end
+		end)
+	end
+
+	local shrink = TweenService:Create(gui,
+		TweenInfo.new(time, Enum.EasingStyle.Exponential, Enum.EasingDirection.In),
+		{ Size = UDim2.new(0, 0, 0, 0) })
+	shrink.Completed:Connect(function()
+		if anchor.Parent then
+			anchor:Destroy()
+		end
+	end)
+	shrink:Play()
+
+	return gui, img
+end
+
+-- The inside view on its own, for any sphere that can get big enough to
+-- swallow the camera: while the camera is inside `part`, the screen is
+-- filled with the part's colour at the part's transparency. Follows the
+-- part as it moves, grows, shrinks, recolours and fades, and cleans
+-- itself up when the part is destroyed. The magnet's telegraph uses it;
+-- an explosion does the same thing inline, with the flash on top.
+function BoardEffects.fillWhileInside(part)
+	local screen = getOverlay()
+	if not screen then
+		return
+	end
+
+	local fill = Instance.new("Frame")
+	fill.Name = "InsideFill"
+	fill.Size = UDim2.fromScale(1, 1)
+	fill.BorderSizePixel = 0
+	fill.Visible = false
+	fill.ZIndex = 1
+	fill.Parent = screen
+
+	local step
+	step = RunService.RenderStepped:Connect(function()
+		if not part.Parent then
+			step:Disconnect()
+			fill:Destroy()
+			return
+		end
+		local camera = Workspace.CurrentCamera
+		local inside = camera ~= nil
+			and part.Transparency < 1
+			and (camera.CFrame.Position - part.Position).Magnitude < part.Size.X / 2
+		fill.Visible = inside
+		if inside then
+			fill.BackgroundColor3 = part.Color
+			fill.BackgroundTransparency = part.Transparency
+		end
+	end)
+end
+
+-- opts:
+--   position                 where it goes off
+--   radius, time             the fireball's final radius and how long it lasts
+--   colorFn(elapsed)         its colour every frame; or
+--   startColor, endColor     one tween between the two over 65% of `time`
+--                            (a plain bomb's orange to red)
+--   flashScale, flashImage, flashTime
+--   flashColor               the flash's colour (white if not given)
+--   flashEndColor, flashRecolorAt
+--                            optionally switch it partway (a plain bomb's
+--                            white pop to yellow)
+function BoardEffects.explosion(opts)
+	local position, radius, time = opts.position, opts.radius, opts.time
+
+	-- ── the fireball ──────────────────────────────────────────────────
+	local ball = Instance.new("Part")
+	ball.Name = "ExplosionSphere"
+	ball.Shape, ball.Anchored, ball.CanCollide, ball.CanQuery, ball.CanTouch =
+		Enum.PartType.Ball, true, false, false, false
+	ball.CastShadow = false
+	ball.Material = Enum.Material.Neon
+	ball.Color = opts.colorFn and opts.colorFn(0) or opts.startColor
+	ball.Size, ball.Position = Vector3.new(1, 1, 1), position
+	ball.Parent = Workspace
+
+	TweenService:Create(ball,
+		TweenInfo.new(time, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out),
+		{ Size = Vector3.new(radius, radius, radius) * 2 }):Play()
+
+	local fade = TweenService:Create(ball,
+		TweenInfo.new(time * 0.75, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Transparency = 1 })
+	task.delay(time * 0.25, function()
+		if ball.Parent then
+			fade:Play()
+		end
+	end)
+
+	if opts.endColor and not opts.colorFn then
+		TweenService:Create(ball,
+			TweenInfo.new(time * 0.65, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{ Color = opts.endColor }):Play()
+	end
+
+	-- ── the flash ─────────────────────────────────────────────────────
+	local flashGui, flashImg = makeFlash(
+		position,
+		opts.flashScale,
+		opts.flashImage,
+		opts.flashColor or Color3.new(1, 1, 1),
+		opts.flashTime,
+		opts.flashEndColor,
+		opts.flashRecolorAt
+	)
+
+	-- ── the inside view ───────────────────────────────────────────────
+	-- A full-screen fill in the fireball's colour, and the flash drawn
+	-- again on top of it at the size the billboard would be, both shown
+	-- only while the camera is inside the fireball. Driven from
+	-- RenderStepped so the check uses the camera the frame is drawn with.
+	local screen = getOverlay()
+	local fill, screenFlash
+	if screen then
+		fill = Instance.new("Frame")
+		fill.Name = "ExplosionFill"
+		fill.Size = UDim2.fromScale(1, 1)
+		fill.BorderSizePixel = 0
+		fill.Visible = false
+		fill.ZIndex = 1
+		fill.Parent = screen
+
+		screenFlash = Instance.new("ImageLabel")
+		screenFlash.Name = "ExplosionFlash"
+		screenFlash.BackgroundTransparency = 1
+		screenFlash.AnchorPoint = Vector2.new(0.5, 0.5)
+		screenFlash.Image = opts.flashImage
+		screenFlash.ScaleType = Enum.ScaleType.Fit
+		screenFlash.Visible = false
+		screenFlash.ZIndex = 2
+		screenFlash.Parent = screen
+	end
+
+	local elapsed = 0
+	local step
+	step = RunService.RenderStepped:Connect(function(dt)
+		elapsed += dt
+		if opts.colorFn and ball.Parent then
+			ball.Color = opts.colorFn(elapsed)
+		end
+		if not fill then
+			return
+		end
+
+		local camera = Workspace.CurrentCamera
+		local inside = camera ~= nil
+			and ball.Parent ~= nil
+			and ball.Transparency < 1
+			and (camera.CFrame.Position - position).Magnitude < ball.Size.X / 2
+		fill.Visible = inside
+		if not inside then
+			screenFlash.Visible = false
+			return
+		end
+		fill.BackgroundColor3 = ball.Color
+		fill.BackgroundTransparency = ball.Transparency
+
+		-- The billboard's size is in studs; on screen that's studs divided
+		-- by how many studs the view spans at that depth.
+		local point, onScreen = camera:WorldToViewportPoint(position)
+		local studs = flashGui.Parent and flashGui.Size.X.Scale or 0
+		if onScreen and point.Z > 0 and studs > 0 then
+			local viewHeight = camera.ViewportSize.Y
+			local studsAcross = 2 * point.Z * math.tan(math.rad(camera.FieldOfView) / 2)
+			local pixels = studs / studsAcross * viewHeight
+			screenFlash.Position = UDim2.fromOffset(point.X, point.Y)
+			screenFlash.Size = UDim2.fromOffset(pixels, pixels)
+			screenFlash.ImageColor3 = flashImg.ImageColor3
+			screenFlash.Visible = true
+		else
+			screenFlash.Visible = false
+		end
+	end)
+
+	task.delay(math.max(time, opts.flashTime or 0), function()
+		step:Disconnect()
+		if ball.Parent then
+			ball:Destroy()
+		end
+		if fill then
+			fill:Destroy()
+			screenFlash:Destroy()
 		end
 	end)
 end

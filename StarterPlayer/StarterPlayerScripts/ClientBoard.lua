@@ -2,6 +2,12 @@
     ClientBoard (ModuleScript)
     Path: StarterPlayer → StarterPlayerScripts
     Parent: StarterPlayerScripts
+    Exported: 2026-09-25 02:23:34
+]]
+--[[
+    ClientBoard (ModuleScript)
+    Path: StarterPlayer → StarterPlayerScripts
+    Parent: StarterPlayerScripts
     Exported: 2026-09-24 20:25:14
 ]]
 --[[
@@ -146,19 +152,17 @@ local function setDisplayText(part, size)
 end
 
 -- ── radiant ───────────────────────────────────────────────────────────
--- The radiant colour cycle stays here rather than becoming a behaviour
--- module. It isn't a kind — it's an overlay that can ride on any of
--- them — and it's needed from phase 1, before the runner below exists.
+-- A radiant ORB's colour cycle stays here rather than becoming a
+-- behaviour module: an orb has no behaviour for it to live in, and it's
+-- needed from phase 1, before the runner below existed.
+--
+-- A radiant SPECIAL doesn't get this. Its radiant behaviour module owns
+-- its colour outright (a radiant bomb only goes rainbow on its lit tick,
+-- a radiant splitter spins the wheel backwards), and this loop would
+-- fight it for the same property every frame.
 
-local RADIANT_COLORS = {
-	Color3.fromRGB(255, 0, 0),
-	Color3.fromRGB(255, 255, 0),
-	Color3.fromRGB(0, 255, 0),
-	Color3.fromRGB(0, 255, 255),
-	Color3.fromRGB(0, 0, 255),
-	Color3.fromRGB(255, 0, 255),
-}
-local RADIANT_CYCLE_TIME = 3
+local RADIANT_COLORS = Config.RADIANT_COLORS
+local RADIANT_CYCLE_TIME = Config.RADIANT_CYCLE_TIME
 local RADIANT_SEGMENT = RADIANT_CYCLE_TIME / #RADIANT_COLORS
 local radiantTweenInfo = TweenInfo.new(RADIANT_SEGMENT, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut)
 
@@ -475,6 +479,11 @@ local function absorbable(part)
 	if entry.claimed or entry.held or entry.selling or entry.stashing or entry.retiring then
 		return nil
 	end
+	-- mid-hitstop: it's about to be thrown, and its tremble would fight
+	-- the pull for the part's position
+	if entry.hitstop then
+		return nil
+	end
 	if part:GetAttribute("Held") then
 		return nil
 	end
@@ -485,6 +494,185 @@ local function absorbable(part)
 		return nil
 	end
 	return entry.id, entry.size
+end
+
+-- The radiant splitter's and merger's version: they take any kind in
+-- RADIANT_ABSORBS, except a radiant special. Returns id, ledger size and
+-- kind, or nil. Every other condition is absorbable's, for the same
+-- reason — each one mirrors something Board._radiantTarget checks — with
+-- one addition and one exception:
+--
+--   * a magnet that has started pulling is off-limits (its Pulling
+--     attribute; the server works the same thing out from the clock)
+--   * a magnet is never "settled" — it's off rising and wandering under
+--     its own control — so for a magnet the state test is skipped and
+--     only the age test applies, the way selling and stashing treat it
+local function absorbableAny(part)
+	local entry = byPart[part]
+	if not entry or not entry.part then
+		return nil
+	end
+	if not Rules.radiantCanTake(entry.kind, entry.radiant) then
+		return nil
+	end
+	if entry.claimed or entry.held or entry.selling or entry.stashing or entry.retiring or entry.voiding or entry.hitstop then
+		return nil
+	end
+	if part:GetAttribute("Held") then
+		return nil
+	end
+	if entry.immuneUntil and os.clock() < entry.immuneUntil then
+		return nil
+	end
+	if entry.selfDriven then
+		-- A magnet. The server judges its window by the clock: it has to
+		-- be on the board (its stamp has passed) and not yet pulling. Both
+		-- held a margin tighter here than there, because the server checks
+		-- when the report ARRIVES. The clock matters as well as the
+		-- attribute: a magnet rebuilt by a resync launches again with its
+		-- old stamp, so its Pulling attribute is seconds behind what the
+		-- server believes.
+		--
+		-- Only on the board, not "live": a magnet rises straight up
+		-- through the middle of the platform, which is exactly where a
+		-- splitter sits, and it's through by the time the fall guard's
+		-- grace has passed. The originals caught it on the way through.
+		-- Nothing about taking a magnet early is a duplication risk the
+		-- grace would guard against.
+		if part:GetAttribute("Pulling") then
+			return nil
+		end
+		local t = serverNow()
+		if t < entry.launchAt + Config.LIVE_MARGIN then
+			return nil
+		end
+		if t > entry.launchAt + Rules.magnetPullStartsAfter() - Config.LIVE_MARGIN then
+			return nil
+		end
+		return entry.id, entry.size, entry.kind
+	end
+	if entry.state ~= "settled" then
+		return nil
+	end
+	if serverNow() < entry.launchAt + Config.LAUNCH_TO_LIVE + Config.LIVE_MARGIN then
+		return nil
+	end
+	return entry.id, entry.size, entry.kind
+end
+
+-- ── hitstop ────────────────────────────────────────────────────────────
+-- A blast's push, delivered after a beat: the orb freezes where it is,
+-- trembles, and then takes the hit. See BoardConfig.HITSTOP for how long
+-- and how hard, both worked out from the push itself.
+--
+-- The board owns this rather than the blast, because a frozen orb is
+-- anchored and anchoring is board state: an AFK pause, a collapse, a
+-- sale, the stash and a splitter all have opinions about whether an orb
+-- is anchored, and each of them has to be able to overrule a freeze.
+-- Whichever of those gets to it first wins, and the freeze simply lets
+-- go without pushing.
+--
+-- A second blast landing on an orb that's still frozen adds its push
+-- and holds it for as long as the longer of the two wants.
+local function hitstop(part, impulse)
+	local entry = byPart[part]
+	if not entry or entries[entry.id] ~= entry or not part.Parent then
+		-- not one of ours; push it the ordinary way
+		part:ApplyImpulse(impulse)
+		return
+	end
+
+	local cfg = Config.HITSTOP
+	local strength = math.clamp(impulse.Magnitude / cfg.FULL_IMPULSE, 0, 1) ^ cfg.CURVE
+	local duration = cfg.MIN_TIME + (cfg.MAX_TIME - cfg.MIN_TIME) * strength
+	local shake = cfg.MIN_SHAKE + (cfg.MAX_SHAKE - cfg.MIN_SHAKE) * strength
+	local now = os.clock()
+
+	local held = entry.hitstop
+	if held then
+		held.impulse += impulse
+		held.shake = math.max(held.shake, shake)
+		if now + duration > held.untilAt then
+			held.untilAt = now + duration
+		end
+		return
+	end
+
+	held = {
+		impulse = impulse,
+		shake = shake,
+		startedAt = now,
+		untilAt = now + duration,
+		cframe = part.CFrame,
+		velocity = part.AssemblyLinearVelocity,
+		spin = part.AssemblyAngularVelocity,
+		canCollide = part.CanCollide,
+	}
+	entry.hitstop = held
+	part.Anchored = true
+	part.CanCollide = false
+	-- For the next blast to find: an anchored orb normally sits a blast
+	-- out, but a frozen one should take the second push on top.
+	part:SetAttribute("BlastFrozen", true)
+
+	task.spawn(function()
+		while true do
+			local dt = RunService.Heartbeat:Wait()
+			-- Gone: sold, auto-sold, removed, resynced. Its remover dealt
+			-- with it.
+			if entries[entry.id] ~= entry or not part.Parent or entry.hitstop ~= held then
+				return
+			end
+			-- Something else has taken charge of it. The collapse freezes
+			-- it where it is; the stash, a splitter, a sale or a player's
+			-- hands each move it themselves. Collision goes back to what it
+			-- was, since a grab especially works from what it finds.
+			if collapsing then
+				-- frozen with everything else; the wipe takes it from here
+				entry.hitstop = nil
+				part:SetAttribute("BlastFrozen", nil)
+				return
+			end
+			if entry.claimed or entry.stashing or entry.selling
+				or entry.held or entry.retiring or entry.voiding
+			then
+				entry.hitstop = nil
+				part:SetAttribute("BlastFrozen", nil)
+				part.CanCollide = held.canCollide
+				return
+			end
+
+			if paused then
+				-- The freeze waits out the pause rather than running down
+				-- underneath it.
+				held.startedAt += dt
+				held.untilAt += dt
+			else
+				local t = os.clock()
+				if t >= held.untilAt then
+					break
+				end
+				-- Trembles around where it froze, fading out as the freeze
+				-- runs down.
+				local left = (held.untilAt - t) / math.max(held.untilAt - held.startedAt, 1e-3)
+				local amount = held.shake * left
+				part.CFrame = held.cframe + Vector3.new(
+					(rand() * 2 - 1) * amount,
+					(rand() * 2 - 1) * amount,
+					(rand() * 2 - 1) * amount
+				)
+			end
+		end
+
+		entry.hitstop = nil
+		part:SetAttribute("BlastFrozen", nil)
+		part.CFrame = held.cframe
+		part.Anchored = false
+		part.CanCollide = held.canCollide
+		part.AssemblyLinearVelocity = held.velocity
+		part.AssemblyAngularVelocity = held.spin
+		part:ApplyImpulse(held.impulse)
+	end)
 end
 
 -- Claims the orb and pulls it into `target` over `duration`, then removes
@@ -534,6 +722,25 @@ local function absorb(part, target, duration, pendingAttribute, opts)
 	entry.claimed = true
 	if pendingAttribute then
 		part:SetAttribute(pendingAttribute, true)
+	end
+
+	-- A special being taken (only a radiant splitter or merger does this)
+	-- stops being one on this frame. Its behaviour would otherwise run on
+	-- for the whole convergence: a bomb could go off inside the splitter,
+	-- a mimic walk out of the pull, a magnet keep steering itself. The old
+	-- fuses got this by destroying the victim's Script ("neutralize");
+	-- stopping the behaviour does the same and runs its cleanups too, so
+	-- a magnet's telegraph and a mimic's walking rig go with it.
+	--
+	-- An awake mimic also drops its defuse (a blast mid-pull mustn't turn
+	-- it back into an orb) and its MimicActive flag, which is what tells
+	-- MimicLegsClient to pull the legs in.
+	if entry.kind ~= "ball" then
+		stopBehaviours(entry)
+		entry.defuse = nil
+		if part:GetAttribute("MimicActive") then
+			part:SetAttribute("MimicActive", false)
+		end
 	end
 
 	-- Off the raycast so it can't be grabbed, sold or stashed mid-pull.
@@ -721,23 +928,41 @@ end
 -- that consumes other orbs, a module plus the absorb/emerge pair the
 -- splitter introduced, which the merger will share.
 
-local behaviourCache = {} -- [kind] = module, or false for "there isn't one"
+local behaviourCache = {} -- [module name] = module, or false for "there isn't one"
 
-local function behaviourFor(kind)
-	local cached = behaviourCache[kind]
+-- A radiant special runs its radiant module (BoardConfig.RADIANT_BEHAVIOUR)
+-- instead of its stock one, never both — the same swap the old
+-- applyRadiantOverlay made when it pulled BombFuse out and put
+-- RadiantBombFuse in. A radiant orb has no module either way.
+local function behaviourFor(kind, radiant)
+	local name = radiant and Config.RADIANT_BEHAVIOUR[kind]
+	if not name then
+		local look = Config.LOOK[kind]
+		name = look and look.template
+	end
+	if not name then
+		return nil
+	end
+
+	local cached = behaviourCache[name]
 	if cached ~= nil then
 		return cached or nil
 	end
 
-	local look = Config.LOOK[kind]
-	local name = look and look.template
-	local behaviours = name and Rep:FindFirstChild("Behaviours")
+	local behaviours = Rep:FindFirstChild("Behaviours")
 	local module = behaviours and behaviours:FindFirstChild(name)
 
 	if not (module and module:IsA("ModuleScript")) then
 		-- Not an error: a kind with no module is one whose step hasn't
-		-- landed yet, and its weight should be 0 anyway.
-		behaviourCache[kind] = false
+		-- landed yet, and its weight should be 0 anyway. A missing RADIANT
+		-- module is louder, because RADIANT_BEHAVIOUR says it exists and
+		-- the server is rolling radiants for that kind on the strength of
+		-- it: the orb would sit there doing nothing.
+		if radiant then
+			warn(("[ClientBoard] BoardConfig.RADIANT_BEHAVIOUR names %s for radiant %s, but there's no ModuleScript by that name in ReplicatedStorage → Behaviours")
+				:format(name, tostring(kind)))
+		end
+		behaviourCache[name] = false
 		return nil
 	end
 
@@ -747,16 +972,16 @@ local function behaviourFor(kind)
 			name,
 			ok and "it has no start(ctx)" or tostring(result)
 			))
-		behaviourCache[kind] = false
+		behaviourCache[name] = false
 		return nil
 	end
 
-	behaviourCache[kind] = result
+	behaviourCache[name] = result
 	return result
 end
 
 local function startBehaviour(entry)
-	local module = behaviourFor(entry.kind)
+	local module = behaviourFor(entry.kind, entry.radiant)
 	if not module then
 		return
 	end
@@ -830,6 +1055,25 @@ local function startBehaviour(entry)
 			return otherEntry and otherEntry.kind or nil
 		end,
 
+		-- Whether another part passes for a plain orb: an orb, or a mimic
+		-- that hasn't woken. Anything that treats orbs specially — a
+		-- magnet's pull, a radiant bomb's — goes by this rather than by
+		-- kind, so a dormant mimic gets dragged along with the orbs it's
+		-- hiding among. The originals got this by accident (they matched
+		-- on the Name, which a dormant mimic wore as a disguise); a mimic
+		-- sitting still while every orb around it flies off would give it
+		-- away.
+		looksLikeOrb = function(other)
+			local otherEntry = byPart[other]
+			if not otherEntry then
+				return false
+			end
+			if otherEntry.kind == "ball" then
+				return true
+			end
+			return otherEntry.kind == "mimic" and not other:GetAttribute("MimicActive")
+		end,
+
 		-- Whether the board is running at all. A special that acts on
 		-- other orbs stops acting the moment this goes false — an AFK
 		-- pause or a collapse — though it can keep pulsing.
@@ -854,7 +1098,13 @@ local function startBehaviour(entry)
 
 		-- See absorbable / absorb / emergeAt / plainOrbCount above.
 		absorbable = absorbable,
+		absorbableAny = absorbableAny,
 		absorb = absorb,
+
+		-- A blast's push on another orb, delivered after a freeze and a
+		-- tremble sized by the push itself. Every explosion goes through
+		-- this instead of ApplyImpulse (see hitstop above).
+		hitstop = hitstop,
 		emergeAt = emergeAt,
 		plainOrbCount = plainOrbCount,
 
@@ -980,8 +1230,27 @@ local function launch(entry)
 	-- it was born in the middle of, its sibling included.
 	local emerge = entry.emerge
 
+	-- A self-driven result — a magnet out of a radiant split or merge —
+	-- doesn't grow and hop. It's simply put where the special was
+	-- standing, at nothing, and its behaviour grows it in and flies it
+	-- off from there exactly as it would from the spawn point. That's
+	-- what the old spawnMagnetResult did, and the hop would only fight
+	-- the magnet's own rise.
+	local placedAt = nil
+	if emerge and selfDriven then
+		placedAt = emerge.position
+		emerge = nil
+		entry.emerge = nil
+	end
+
 	local part = templateFor(entry.kind):Clone()
-	if emerge then
+	if placedAt then
+		part.Anchored = true
+		part.CollisionGroup = CG.Balls
+		part.CanCollide = false
+		part.Size = Vector3.new(0, 0, 0)
+		part.CFrame = CFrame.new(placedAt)
+	elseif emerge then
 		part.Anchored = true
 		part.CollisionGroup = CG.SplitGrowing
 		part.CanCollide = true
@@ -1072,7 +1341,15 @@ local function launch(entry)
 	entry.behavioursAlive = true
 	byPart[part] = entry
 
-	if entry.radiant then
+	-- Born inside the reach of the special that made it, like any result,
+	-- so it gets a moment to rise clear before it can be taken again. An
+	-- emerging orb gets this when it finishes (see stepEmerge).
+	if placedAt then
+		entry.immuneUntil = os.clock() + Config.EMERGE.IMMUNITY
+	end
+
+	-- An orb's only. A radiant special's own module owns its colour.
+	if entry.radiant and entry.kind == "ball" then
 		startRadiantLoop(entry)
 	end
 
@@ -1086,7 +1363,7 @@ local function launch(entry)
 	-- A result is silent: the special that made it already played its
 	-- own sound, and the old BallManager skipped the spawn cue for these
 	-- for the same reason.
-	if emerge then
+	if emerge or placedAt then
 		return
 	end
 
@@ -1330,7 +1607,14 @@ local function stepEmerge(entry, part)
 	-- platform and it's never going to rise past COL_Y the way a launched
 	-- one does.
 	part.Anchored = false
-	part.CollisionGroup = CG.Balls
+	-- Back to an orb's group — unless its own behaviour has already moved
+	-- it somewhere else. A splitter or merger out of a radiant split wakes
+	-- the moment it appears (it's above COL_Y already) and puts itself in
+	-- its own group; knocking it back into Balls for a frame would have it
+	-- collide with every orb it grew up inside.
+	if part.CollisionGroup == CG.SplitGrowing then
+		part.CollisionGroup = CG.Balls
+	end
 	part.CanQuery = true
 
 	-- Handed over still moving outward, whether it's landed yet or not,
@@ -1792,6 +2076,15 @@ local function setPaused(value)
 			for _, site in pairs(emergeSites) do
 				site.readyAt += delta
 			end
+			-- A result caught mid-grow picks up where it left off. Its hop
+			-- is worked out from how long it has been emerging, so without
+			-- this it would land as far out as it would have travelled in
+			-- the whole pause.
+			for _, entry in pairs(entries) do
+				if entry.emerge and entry.emerge.startedAt then
+					entry.emerge.startedAt += delta
+				end
+			end
 		end
 	end
 
@@ -1812,6 +2105,7 @@ local function setPaused(value)
 					or entry.claimed == true
 					or entry.stashing == true
 					or entry.retiring == true -- a spent splitter, pinned for its send-off
+					or entry.hitstop ~= nil -- frozen by a blast; it lets go by itself
 			end
 		end
 	end

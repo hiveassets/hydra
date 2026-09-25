@@ -5,7 +5,7 @@
     Properties:
         Disabled: false
         RunContext: Enum.RunContext.Legacy
-    Exported: 2026-09-24 20:25:13
+    Exported: 2026-09-25 02:23:33
 ]]
 --[[
     AdminCommands (Script)
@@ -123,7 +123,7 @@ end
 -- print here so this script has zero dependency on anything else to
 -- be useful immediately.
 local function reply(player, message)
-	print(("[AdminCommands] -> %s: %s"):format(player.Name, message))
+	print(("[AdminCommands] :: %s %s"):format(player.Name, message))
 end
 
 local DEFAULT_SUMMON_SIZE = 5 -- used when !summon is given a kind but no size
@@ -133,7 +133,7 @@ local DEFAULT_SUMMON_COUNT = 1 -- used when !summon is given a kind but no count
 local function handleSummon(player, args)
 	local kind = args[1]
 	if not kind then
-		reply(player, "Usage: !summon <kind> [r] [size] [count]")
+		reply(player, "failed to preform !summon (format: !summon <kind> [r] [size] [count])")
 		return
 	end
 
@@ -154,7 +154,7 @@ local function handleSummon(player, args)
 	if sizeStr then
 		size = tonumber(sizeStr)
 		if not size or size ~= math.floor(size) or size <= 0 then
-			reply(player, "Size must be a positive whole number.")
+			reply(player, "size must be a positive whole number")
 			return
 		end
 	end
@@ -163,7 +163,7 @@ local function handleSummon(player, args)
 	if countStr then
 		count = tonumber(countStr)
 		if not count or count ~= math.floor(count) or count <= 0 then
-			reply(player, "Count must be a positive whole number.")
+			reply(player, "count must be a positive whole number")
 			return
 		end
 	end
@@ -172,7 +172,7 @@ local function handleSummon(player, args)
 	-- else's is a phase 2 addition (!summon @name bomb).
 	local board = BoardService.get(player)
 	if not board then
-		reply(player, "You don't have a board right now.")
+		reply(player, "you don't have a board right now ..?")
 		return
 	end
 
@@ -180,12 +180,12 @@ local function handleSummon(player, args)
 	local label = radiant and ("radiant " .. kind) or kind
 	if ok then
 		if count == 1 then
-			reply(player, ("Summoned %s at size %d."):format(label, size))
+			reply(player, ("summoned %s at size %d"):format(label, size))
 		else
-			reply(player, ("Summoned %dx %s at size %d."):format(count, label, size))
+			reply(player, ("summoned %dx %s at size %d"):format(count, label, size))
 		end
 	else
-		reply(player, err or ("Couldn't summon kind: " .. tostring(kind)))
+		reply(player, err or ("couldn't summon kind: " .. tostring(kind)))
 	end
 end
 
@@ -215,7 +215,7 @@ local function handleWipeData(player, args)
 		local err
 		userId, err = resolveUserId(target)
 		if not userId then
-			reply(player, err or "Couldn't resolve that user.")
+			reply(player, err or "failed to find that user, try again")
 			return
 		end
 	else
@@ -223,12 +223,12 @@ local function handleWipeData(player, args)
 	end
 
 	if not _G.WipePlayerData then
-		reply(player, "Wipe isn't available right now (LeaderboardSetup hasn't loaded).")
+		reply(player, "LeaderboardSetup is still loading, !wipedata not available right now ...")
 		return
 	end
 
 	_G.WipePlayerData(userId)
-	reply(player, "Wiped data for user " .. userId .. ".")
+	reply(player, "wiped data for userID " .. userId .. "")
 end
 
 -- !money [username|userid] <amount>
@@ -242,7 +242,7 @@ local function handleMoney(player, args)
 		target, amountStr = nil, args[1]
 	end
 	if not amountStr then
-		reply(player, "Usage: !money [username|userid] <+/-amount>")
+		reply(player, "failed to preform !money (format: !money [username|userid] <+/-amount>)")
 		return
 	end
 
@@ -250,7 +250,7 @@ local function handleMoney(player, args)
 	-- deducts
 	local sign, digits = amountStr:match("^([+%-]?)(%d+)$")
 	if not digits then
-		reply(player, "Amount must be a whole number, e.g. 4000 or -2000.")
+		reply(player, "amount must be a whole number")
 		return
 	end
 
@@ -263,7 +263,7 @@ local function handleMoney(player, args)
 	if target then
 		userId, err = resolveUserId(target)
 		if not userId then
-			reply(player, err or "Couldn't resolve that user.")
+			reply(player, err or "couldn't find that user")
 			return
 		end
 	else
@@ -271,16 +271,16 @@ local function handleMoney(player, args)
 	end
 
 	if not _G.AdjustPlayerCash then
-		reply(player, "Money isn't available right now (LeaderboardSetup hasn't loaded).")
+		reply(player, "LeaderboardSetup is still loading, !money not available right now ...")
 		return
 	end
 
 	local ok, resultOrErr = _G.AdjustPlayerCash(userId, amount)
 	if ok then
-		reply(player, ("%s %d for user %d. New balance: %d."):format(
-			amount >= 0 and "Added" or "Removed", math.abs(amount), userId, resultOrErr))
+		reply(player, ("%s %d to userID %d; new balance is %d"):format(
+			amount >= 0 and "added" or "removed", math.abs(amount), userId, resultOrErr))
 	else
-		reply(player, resultOrErr or "Couldn't adjust that balance.")
+		reply(player, resultOrErr or "failed to adjust money, try again")
 	end
 end
 
@@ -288,15 +288,15 @@ end
 local function handleClear(player, args)
 	local board = BoardService.get(player)
 	if not board then
-		reply(player, "You don't have a board right now.")
+		reply(player, "you don't have a board right now ..?")
 		return
 	end
 
 	local ok, err = board:clear()
 	if ok then
-		reply(player, "Cleared the board.")
+		reply(player, "cleared the board")
 	else
-		reply(player, err or "Couldn't clear the board.")
+		reply(player, err or "couldn't clear the board")
 	end
 end
 

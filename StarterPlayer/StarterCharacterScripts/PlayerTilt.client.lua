@@ -4,6 +4,14 @@
     Parent: StarterCharacterScripts
     Properties:
         Disabled: false
+    Exported: 2026-09-25 02:23:36
+]]
+--[[
+    PlayerTilt (LocalScript)
+    Path: StarterPlayer → StarterCharacterScripts
+    Parent: StarterCharacterScripts
+    Properties:
+        Disabled: false
     Exported: 2026-09-24 20:25:15
 ]]
 --[[
@@ -111,4 +119,62 @@ connection = RunService.Heartbeat:Connect(function(dt)
 	local spin = CFrame.Angles(spinAngle, 0, 0)
 
 	rootJoint.C0 = leanCFrame and (originalC0 * leanCFrame * spin) or (originalC0 * spin)
+end)
+-- ── diagnostics (temporary) ───────────────────────────────────────────
+-- Press F7 while the tilt is misbehaving and a snapshot of everything it
+-- depends on goes to the output (F9 in a live game). It's there to catch
+-- the broken-tilt bug in the act; take it out once that's found.
+local UserInputService = game:GetService("UserInputService")
+
+local function angles(cf)
+	local x, y, z = cf:ToEulerAnglesXYZ()
+	return ("(%.0f°, %.0f°, %.0f°)"):format(math.deg(x), math.deg(y), math.deg(z))
+end
+
+local function vec(v)
+	return ("(%.2f, %.2f, %.2f)"):format(v.X, v.Y, v.Z)
+end
+
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed or input.KeyCode ~= Enum.KeyCode.F7 then
+		return
+	end
+
+	local joints, tilts = {}, 0
+	for _, d in ipairs(char:GetDescendants()) do
+		if d:IsA("Motor6D") and (d.Name == "RootJoint" or d.Name == "Root") then
+			table.insert(joints, ("%s in %s: %s -> %s, enabled=%s, C0 %s")
+				:format(d.Name, d.Parent and d.Parent.Name or "?",
+					d.Part0 and d.Part0.Name or "nil", d.Part1 and d.Part1.Name or "nil",
+					tostring(d.Enabled), angles(d.C0)))
+		end
+		if d:IsA("LocalScript") and d.Name == script.Name then
+			tilts += 1
+		end
+	end
+
+	local touching = {}
+	for _, p in ipairs(root:GetTouchingParts()) do
+		table.insert(touching, ("%s%s"):format(p:GetFullName(), p.CanCollide and "" or " (non-solid)"))
+	end
+
+	local torso = char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
+	print(table.concat({
+		"[PlayerTilt] snapshot",
+		("rig %s, state %s, health %.0f, PlatformStand %s, AutoRotate %s"):format(
+			humanoid.RigType.Name, humanoid:GetState().Name, humanoid.Health,
+			tostring(humanoid.PlatformStand), tostring(humanoid.AutoRotate)),
+		("root up %s look %s, velocity %s, spin %s, anchored %s"):format(
+			vec(root.CFrame.UpVector), vec(root.CFrame.LookVector),
+			vec(root.AssemblyLinearVelocity), vec(root.AssemblyAngularVelocity), tostring(root.Anchored)),
+		torso and ("torso up %s"):format(vec(torso.CFrame.UpVector)) or "no torso",
+		("RootJoint now %s, captured at spawn %s, joint is still ours: %s"):format(
+			angles(rootJoint.C0), angles(originalC0), tostring(rootJoint.Parent == root)),
+		("lean %s, spinAngle %.1f°, falling speed %.1f"):format(
+			angles(leanCFrame), math.deg(spinAngle), -root.AssemblyLinearVelocity.Y),
+		("PlayerTilt copies in character: %d"):format(tilts),
+		"joints: " .. (#joints > 0 and table.concat(joints, " | ") or "none"),
+		"root touching: " .. (#touching > 0 and table.concat(touching, ", ") or "nothing"),
+		("gravity %.1f, FloorMaterial %s"):format(workspace.Gravity, humanoid.FloorMaterial.Name),
+	}, "\n  "))
 end)

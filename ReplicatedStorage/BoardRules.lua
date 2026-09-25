@@ -2,6 +2,12 @@
     BoardRules (ModuleScript)
     Path: ReplicatedStorage
     Parent: ReplicatedStorage
+    Exported: 2026-09-25 02:23:34
+]]
+--[[
+    BoardRules (ModuleScript)
+    Path: ReplicatedStorage
+    Parent: ReplicatedStorage
     Exported: 2026-09-24 20:25:14
 ]]
 --[[
@@ -188,10 +194,32 @@ end
 -- The sizes this produces aren't whole numbers (a 7 steps by 1.4). That's
 -- fine: a merger's size is its budget and how big it's drawn, never a
 -- price, and the stash rounds it when it pockets one.
-function BoardRules.mergerAfterMerge(size, bornSize)
-	local cfg = Config.MERGER
+--
+-- `radiant` for a radiant merger, whose step is a tenth rather than a
+-- fifth (see BoardConfig.RADIANT_MERGER).
+function BoardRules.mergerAfterMerge(size, bornSize, radiant)
+	local cfg = radiant and Config.RADIANT_MERGER or Config.MERGER
 	local nextSize = size - bornSize * cfg.SHRINK_FRACTION
 	return nextSize, nextSize <= cfg.FLOOR
+end
+
+-- Whether a radiant splitter or merger may take something of this kind
+-- and radiance at all. The one rule both sides apply: anything in
+-- RADIANT_ABSORBS, except a radiant special. (Timing and "is it mid-way
+-- into something else" are separate questions each side asks its own
+-- way.)
+function BoardRules.radiantCanTake(kind, radiant)
+	if not Config.RADIANT_ABSORBS[kind] then
+		return false
+	end
+	return kind == "ball" or not radiant
+end
+
+-- When a magnet's pull starts, in seconds after it launched. Until then
+-- it can be sold, stashed, or taken by a radiant splitter or merger.
+function BoardRules.magnetPullStartsAfter()
+	local cfg = Config.MAGNET
+	return cfg.WANDER_START_DELAY + cfg.WANDER_TIME
 end
 
 -- The merge result's colour: a size-weighted blend, so the bigger orb
@@ -280,8 +308,8 @@ function BoardRules.rollRadiant(rand)
 end
 
 -- Whether a kind can exist in its radiant form. A plain orb always can;
--- the specials each need their own radiant behaviour, and until phase 3
--- puts those back none of them are on the board at all.
+-- a special can once it has a radiant behaviour module, which is what
+-- BoardConfig.RADIANT_BEHAVIOUR lists. The mimic never has had one.
 --
 -- The stash asks this BEFORE taking something, rather than discovering
 -- it at deploy time: an orb that can't be handed back the way it went in
@@ -290,7 +318,7 @@ function BoardRules.radiantSupported(kind)
 	if kind == "ball" then
 		return true
 	end
-	return false
+	return Config.RADIANT_BEHAVIOUR[kind] ~= nil
 end
 
 -- Balls are coloured at spawn by the server rather than the client, for

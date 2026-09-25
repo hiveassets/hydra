@@ -4,7 +4,7 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
-    Exported: 2026-09-24 20:25:15
+    Exported: 2026-09-25 02:23:36
 ]]
 --[[
     StashClient (LocalScript)

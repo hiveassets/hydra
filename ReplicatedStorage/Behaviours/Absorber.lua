@@ -2,6 +2,12 @@
     Absorber (ModuleScript)
     Path: ReplicatedStorage → Behaviours
     Parent: Behaviours
+    Exported: 2026-09-25 02:23:34
+]]
+--[[
+    Absorber (ModuleScript)
+    Path: ReplicatedStorage → Behaviours
+    Parent: Behaviours
     Exported: 2026-09-24 20:25:14
 ]]
 --[[
@@ -62,6 +68,22 @@
 			                   use spent it — the same function the server
 			                   calls (BoardRules), so the two can't
 			                   disagree about which use is the last
+
+			-- optional, for the radiant splitter and merger (step 6):
+			pick(other)      = whether it may take this part, returning
+			                   id, size, kind — instead of the default,
+			                   which is plain orbs only (ctx.absorbable)
+			sameKind         = with wants > 1, only a set that's all one
+			                   kind will do (two bombs, two orbs — not a
+			                   bomb and an orb)
+			color(elapsed)   = its colour every frame from the moment it
+			                   exists, dormant or awake, instead of the
+			                   idle colour and the saw-wave pulse
+			hum              = a SOUNDS entry looped on it for as long as
+			                   it lives
+			finale(position) = what happens instead of the send-off's
+			                   flash, once it has shrunk to nothing and
+			                   been taken off the board
 		}
 ]]
 
@@ -88,8 +110,9 @@ end
 
 -- Eases the size from wherever it is now to `target` over `time`,
 -- bottom-pinned, timed by the clock rather than by frames. Returns false
--- if the behaviour stopped partway.
-local function shrinkTo(ctx, target, time, style, direction)
+-- if the behaviour stopped partway. `paint`, if given, keeps a radiant
+-- one's colour moving while it shrinks.
+local function shrinkTo(ctx, target, time, style, direction, paint)
 	local part = ctx.part
 	local from = part.Size.X
 	local elapsed = 0
@@ -99,6 +122,9 @@ local function shrinkTo(ctx, target, time, style, direction)
 			return false
 		end
 		elapsed += dt
+		if paint then
+			paint(dt)
+		end
 		local alpha = TweenService:GetValue(math.clamp(elapsed / time, 0, 1), style, direction)
 		setSizeFromBottom(part, from + (target - from) * alpha)
 	end
@@ -106,12 +132,18 @@ local function shrinkTo(ctx, target, time, style, direction)
 end
 
 -- ── dormant ───────────────────────────────────────────────────────────
-local function waitForWake(ctx)
+-- `paint`, when the spec has its own colour, keeps it moving through the
+-- rise as well: a radiant splitter reads as radiant from the moment it
+-- appears, where a stock one wears its idle colour until it wakes.
+local function waitForWake(ctx, paint)
 	local colY = ctx.config.COL_Y
 	while ctx.part.Position.Y <= colY do
-		RunService.Heartbeat:Wait()
+		local dt = RunService.Heartbeat:Wait()
 		if not ctx.alive() then
 			return false
+		end
+		if paint then
+			paint(dt)
 		end
 	end
 	return true
@@ -148,6 +180,14 @@ local function makeCenterPull(ctx, cfg)
 	-- so a special ends up orbiting the middle rather than parked in it.
 	-- That's the original's behaviour and it's the one we want.
 	local function update()
+		-- An anchored assembly's mass is infinite, and a force worked out
+		-- from it is NaN — which the solver applies the moment the part is
+		-- unanchored again. A special is anchored while it grows out of a
+		-- radiant split, and across an AFK pause.
+		if ctx.part.Anchored then
+			force.Force = Vector3.zero
+			return
+		end
 		local pos = ctx.part.Position
 		local offset = Vector3.new(-pos.X, 0, -pos.Z)
 		local dist = offset.Magnitude
@@ -167,7 +207,7 @@ end
 -- The budget is spent. Ease to the floor, then to nothing, then flash
 -- out of black. The server let go of this special the moment its last
 -- use arrived, so this only has to clean up after itself.
-local function sendOff(ctx, cfg, destroyPull)
+local function sendOff(ctx, cfg, destroyPull, finale, paint)
 	local part = ctx.part
 
 	-- Nothing can sell, stash or grab it from here: the ledger has
@@ -185,12 +225,23 @@ local function sendOff(ctx, cfg, destroyPull)
 	part.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
 	part.Anchored = true
 
-	if not shrinkTo(ctx, cfg.FLOOR, cfg.SHRINK_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out) then
+	if not shrinkTo(ctx, cfg.FLOOR, cfg.SHRINK_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, paint) then
 		return
 	end
 
 	local size = part.Size.X -- captured before the vanish touches it
-	if not shrinkTo(ctx, 0, cfg.VANISH_TIME, Enum.EasingStyle.Exponential, Enum.EasingDirection.In) then
+	if not shrinkTo(ctx, 0, cfg.VANISH_TIME, Enum.EasingStyle.Exponential, Enum.EasingDirection.In, paint) then
+		return
+	end
+
+	-- A radiant one goes off instead. It goes off BEFORE it's taken off
+	-- the board: its boom is primed on the part (see BoardEffects.
+	-- primeSound), and removing the part first would destroy the primed
+	-- sound with it. It can't push itself — it's anchored for the
+	-- send-off, and a blast leaves anchored parts alone.
+	if finale then
+		finale(part.Position)
+		ctx.remove()
 		return
 	end
 
@@ -251,9 +302,13 @@ local function reportStuck(ctx, stuckFor, remaining)
 end
 
 -- ── awake ─────────────────────────────────────────────────────────────
-local function awake(ctx, spec)
+local function awake(ctx, spec, paint)
 	local cfg = spec.cfg
 	local part = ctx.part
+	local pick = spec.pick or function(other)
+		local id, size = ctx.absorbable(other)
+		return id, size, "ball"
+	end
 
 	local updatePull, destroyPull = makeCenterPull(ctx, cfg)
 
@@ -303,10 +358,15 @@ local function awake(ctx, spec)
 		updatePull()
 
 		-- Saw-wave pulse: pops to PULSE_COLOR, eases back down to
-		-- DEFAULT_COLOR over the rest of the cycle, pops again.
-		pulseElapsed = (pulseElapsed + dt) % cfg.PULSE_TIME
-		local fade = 1 - TweenService:GetValue(pulseElapsed / cfg.PULSE_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-		part.Color = cfg.DEFAULT_COLOR:Lerp(cfg.PULSE_COLOR, fade)
+		-- DEFAULT_COLOR over the rest of the cycle, pops again. A radiant
+		-- one runs its own colour instead.
+		if paint then
+			paint(dt)
+		else
+			pulseElapsed = (pulseElapsed + dt) % cfg.PULSE_TIME
+			local fade = 1 - TweenService:GetValue(pulseElapsed / cfg.PULSE_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+			part.Color = cfg.DEFAULT_COLOR:Lerp(cfg.PULSE_COLOR, fade)
+		end
 
 		-- Grounded gate. The apex of an arc only spends ~0.015s under
 		-- GROUNDED_VY; something sitting on the platform stays under it
@@ -353,24 +413,36 @@ local function awake(ctx, spec)
 			-- The first `wants` orbs touching it. Nothing is taken until
 			-- there are enough: a merger that grabbed one orb and waited
 			-- for a second would hold it hostage.
-			local picked, ids = {}, {}
+			--
+			-- With sameKind, candidates are sorted into one bucket per
+			-- kind and the first bucket to fill is the set. A radiant
+			-- merger touching a bomb and an orb takes neither.
+			local buckets = {}
+			local picked, ids = nil, nil
 			for _, other in ipairs(ctx.folder:GetChildren()) do
-				if #picked >= spec.wants then
-					break
-				end
 				if other ~= part and other:IsA("BasePart") then
-					local orbId, orbSize = ctx.absorbable(other)
+					local orbId, orbSize, orbKind = pick(other)
 					if orbId
 						and orbSize > spec.minOrbSize
 						and (other.Position - center).Magnitude <= reach + other.Size.X / 2
 					then
-						table.insert(picked, other)
-						table.insert(ids, orbId)
+						local key = spec.sameKind and orbKind or "any"
+						local bucket = buckets[key]
+						if not bucket then
+							bucket = { parts = {}, ids = {} }
+							buckets[key] = bucket
+						end
+						table.insert(bucket.parts, other)
+						table.insert(bucket.ids, orbId)
+						if #bucket.parts >= spec.wants then
+							picked, ids = bucket.parts, bucket.ids
+							break
+						end
 					end
 				end
 			end
 
-			if #picked >= spec.wants then
+			if picked then
 				-- Order matters. Write down where the results come out
 				-- BEFORE telling the server, so the site is there however
 				-- fast the answer comes back. It's keyed by the first id,
@@ -385,7 +457,7 @@ local function awake(ctx, spec)
 
 				local nextSize, spent = spec.after(remaining)
 				if spent then
-					sendOff(ctx, cfg, destroyPull)
+					sendOff(ctx, cfg, destroyPull, spec.finale, paint)
 					return
 				end
 
@@ -402,8 +474,36 @@ end
 
 function Absorber.run(ctx, spec)
 	-- Dormant, it wears the colour it'll pulse from, so it's already
-	-- recognisable on the way up.
-	ctx.part.Color = spec.cfg.DEFAULT_COLOR
+	-- recognisable on the way up. A radiant one is already cycling.
+	local paint = nil
+	if spec.color then
+		local elapsed = 0
+		paint = function(dt)
+			elapsed += dt
+			ctx.part.Color = spec.color(elapsed)
+		end
+		paint(0)
+	else
+		ctx.part.Color = spec.cfg.DEFAULT_COLOR
+	end
+
+	-- Its hum, from the moment it exists, riding along on the part. The
+	-- original fired it once as an "attachedLoop" and let the part's
+	-- destruction end it; this ends it whenever the behaviour stops too,
+	-- so a collapse doesn't leave it droning through the wipe.
+	if spec.hum then
+		local hum = Instance.new("Sound")
+		hum.Name = "Hum"
+		hum.SoundId = spec.hum.id
+		hum.Volume = spec.hum.volume or 1
+		hum.PlaybackSpeed = spec.hum.speed or 1
+		hum.Looped = true
+		hum.Parent = ctx.part
+		hum:Play()
+		ctx.onStop(function()
+			hum:Destroy()
+		end)
+	end
 
 	-- Its own collision group from the instant it exists, as the old
 	-- spawnSplitter/spawnMerger did. It still launches with CanCollide
@@ -412,10 +512,10 @@ function Absorber.run(ctx, spec)
 	-- rather than being one frame late about it.
 	ctx.part.CollisionGroup = spec.group
 
-	if not waitForWake(ctx) then
+	if not waitForWake(ctx, paint) then
 		return
 	end
-	awake(ctx, spec)
+	awake(ctx, spec, paint)
 end
 
 return Absorber

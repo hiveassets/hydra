@@ -2,6 +2,12 @@
     Magnet (ModuleScript)
     Path: ReplicatedStorage → Behaviours
     Parent: Behaviours
+    Exported: 2026-09-25 02:23:34
+]]
+--[[
+    Magnet (ModuleScript)
+    Path: ReplicatedStorage → Behaviours
+    Parent: Behaviours
     Exported: 2026-09-24 20:25:14
 ]]
 --[[
@@ -173,6 +179,11 @@ local function startTelegraph(ctx)
 	sphere.CFrame = ctx.part.CFrame
 	sphere.Parent = ctx.part
 
+	-- It starts three magnets wide, so it swallows the camera often. From
+	-- inside, a sphere can't be seen at all; this fills the screen with its
+	-- colour and transparency instead, the same as an explosion does.
+	ctx.effects.fillWhileInside(sphere)
+
 	local info = TweenInfo.new(cfg.TELEGRAPH_TIME, Enum.EasingStyle.Exponential, Enum.EasingDirection.In)
 	TweenService:Create(sphere, info, { Size = Vector3.new(ctx.size, ctx.size, ctx.size) }):Play()
 	local fade = TweenService:Create(sphere, info, { Transparency = 0 })
@@ -205,8 +216,13 @@ end
 -- recombined into one position every frame — which is all the pair of
 -- tween-driver Instances in the old version ever did.
 --
--- Returns false if the magnet left the board partway.
-local function travel(ctx)
+-- Returns false if the magnet left the board partway; otherwise true and
+-- where it ended up, which the radiant magnet's orbit starts from.
+--
+-- `tintTelegraph`, for the radiant magnet: the warning sphere wears
+-- whatever colour the magnet itself is showing that frame, rather than
+-- the plain magnet's fixed yellow.
+local function travel(ctx, tintTelegraph)
 	local cfg = ctx.config.MAGNET
 	local scaled = ctx.size - cfg.SIZE_REF
 	local riseY = cfg.RISE_Y_BASE + cfg.RISE_Y_PER_SIZE * scaled
@@ -252,9 +268,16 @@ local function travel(ctx)
 		if not telegraph and elapsed >= telegraphAt then
 			telegraph = startTelegraph(ctx)
 		end
+		if tintTelegraph and telegraph and telegraph.Parent then
+			telegraph.Color = ctx.part.Color
+		end
 	end
 
-	return ctx.alive()
+	return ctx.alive(), {
+		angle = angle,
+		riseY = riseY,
+		wanderRadius = wanderRadius,
+	}
 end
 
 -- ── the shine ─────────────────────────────────────────────────────────
@@ -403,7 +426,7 @@ local function pull(ctx, colourTween)
 		for _, other in ipairs(ctx.folder:GetChildren()) do
 			if other ~= part
 				and other:IsA("BasePart")
-				and ctx.kindOf(other) == "ball"
+				and ctx.looksLikeOrb(other)
 				and not other:GetAttribute("Held")
 			then
 				local toMagnet = position - other.Position
@@ -415,6 +438,14 @@ local function pull(ctx, colourTween)
 		end
 	end
 end
+
+-- The radiant magnet (RadiantMagnet.lua) is this magnet up to the moment
+-- the pull starts, with a different colour. These are the pieces it
+-- shares rather than copies — the original RadiantMagnetFuse was a
+-- second 560-line script that duplicated all of them.
+Magnet.growIn = growIn
+Magnet.travel = travel
+Magnet.makeShine = makeShine
 
 function Magnet.start(ctx)
 	growIn(ctx)

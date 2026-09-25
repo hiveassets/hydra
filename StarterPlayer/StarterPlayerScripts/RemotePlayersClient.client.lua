@@ -4,6 +4,14 @@
     Parent: StarterPlayerScripts
     Properties:
         Disabled: false
+    Exported: 2026-09-25 02:23:36
+]]
+--[[
+    RemotePlayersClient (LocalScript)
+    Path: StarterPlayer → StarterPlayerScripts
+    Parent: StarterPlayerScripts
+    Properties:
+        Disabled: false
     Exported: 2026-09-24 20:25:15
 ]]
 --[[
@@ -38,25 +46,19 @@
 	whatsoever happens on their screen. A push that exists for only one
 	person is worse than no push at all.
 
-	THREE MECHANISMS, ON PURPOSE
-
-	The first version of this file used one: move their parts into a
-	collision group that passes through anything ball-ish. That should
-	work — GrabClient already flips collision groups from the client, and
-	groups and their rules replicate down from the server — but it didn't
-	hold in testing, so this version doesn't bet everything on it.
+	WHAT IT DOES
 
 	  1. LocalTransparencyModifier, first, so the visual lands even if
-	     everything below it fails. If other players are faint but still
+	     anything below it fails. If other players are faint but still
 	     solid, this script is running and the collision half is what's
 	     wrong — which is worth knowing at a glance.
-	  2. CanCollide = false. The blunt one, and the one with the fewest
-	     moving parts: no group has to exist, be registered, or have
-	     replicated for it to work.
-	  3. The RemotePlayers collision group, when it's actually available.
-	     Still worth doing — it's the one that survives anything that
-	     re-enables CanCollide, and it says what's meant rather than just
-	     what's switched off.
+	  2. CanCollide = false on every part of their character. The blunt
+	     way, and the one with no moving parts: no collision group has to
+	     exist, be registered, or have replicated for it to work. An
+	     earlier version also tried a RemotePlayers collision group on top
+	     of this; it never held, and this alone works, so it's gone.
+	  3. No name or health bar over them. Their Humanoid's
+	     DisplayDistanceType goes to None, locally.
 
 	Every one of those is local only. The server and the other player
 	never see any of it. Your own character is untouched, because pushing
@@ -73,6 +75,23 @@
 	afterwards, every frame for the first second (when the avatar is
 	still settling), and on a slow sweep forever after. That's the same
 	belt-and-braces AFKHandler runs on the server, for the same reason.
+
+	THE HUMANOID TURNS COLLISION BACK ON
+
+	None of the above is fast enough on its own, because the thing most
+	likely to switch a part back to solid isn't the server at all: it's
+	their Humanoid, on your machine. A Humanoid keeps its own body's
+	collision the way it wants it, and re-asserts that when its state
+	changes — and a dash changes state (running to freefall and back, with
+	gravity cancelled for a tenth of a second). For that moment their
+	torso and head were solid again on your screen, and a player dashing
+	through your pile shoved it. The slow sweep put it right a second
+	later, which is exactly the "only when they dash" pattern.
+
+	So their parts are also forced back to non-collidable on every
+	Stepped — the instant before each physics step — which is the last
+	word before anything can collide. It's a handful of parts per player,
+	a trivial cost.
 ]]
 
 local Players = game:GetService("Players")
@@ -80,32 +99,16 @@ local RunService = game:GetService("RunService")
 local Rep = game:GetService("ReplicatedStorage")
 
 local Config = require(Rep:WaitForChild("BoardConfig"))
-local CG = require(Rep:WaitForChild("CollisionGroups"))
 
 local localPlayer = Players.LocalPlayer
 
 local TRANSPARENCY = Config.REMOTE_PLAYER_TRANSPARENCY
-local REMOTE_GROUP = "RemotePlayers"
 local SETTLE_FRAMES = 60   -- reapply every frame for about a second after a character appears
 local RECONCILE_INTERVAL = 1
 
 -- Prints one line per character saying what actually stuck. Turn it off
--- once this is behaving; while it's on, it's the fastest way to tell
--- "the script never ran" apart from "the group didn't take".
-local DEBUG = true
-
--- CG.exists rather than CG.RemotePlayers: reading a name the module
--- doesn't declare is a deliberate error (that's how it catches typos),
--- and an error here would take the transparency down with it. This way
--- a missing group entry degrades to mechanisms 1 and 2 instead.
-local groupDeclared = CG.exists(REMOTE_GROUP)
-
-if not groupDeclared then
-	warn(
-		"[RemotePlayers] ReplicatedStorage.CollisionGroups has no \"" .. REMOTE_GROUP .. "\" entry, so other "
-			.. "players are being made non-collidable the blunt way instead. Add the entry to get the tidy version."
-	)
-end
+-- off now that it's behaving.
+local DEBUG = false
 
 local descendantConns = {} -- [player] = connection for their current character
 
@@ -114,11 +117,17 @@ local function claim(instance)
 		-- A face sits on top of the part and ignores the modifier below,
 		-- so it would stay solid on an otherwise ghostly head.
 		instance.Transparency = TRANSPARENCY
-		return false
+		return
+	end
+
+	-- 3. no name or health bar
+	if instance:IsA("Humanoid") then
+		instance.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+		return
 	end
 
 	if not instance:IsA("BasePart") then
-		return false
+		return
 	end
 
 	-- 1. cosmetic, and first on purpose (see the header)
@@ -126,51 +135,36 @@ local function claim(instance)
 
 	-- 2. the guarantee
 	instance.CanCollide = false
-
-	-- 3. the tidy version, when it's available
-	local grouped = false
-	if groupDeclared and CG.isRegistered(REMOTE_GROUP) then
-		if instance.CollisionGroup == REMOTE_GROUP then
-			grouped = true
-		else
-			grouped = CG.assign(instance, REMOTE_GROUP)
-		end
-	end
-
-	return grouped
 end
 
--- Returns how many parts it touched and how many made it into the
--- group, for the debug line.
+-- Returns how many parts it touched, for the debug line.
 local function claimCharacter(character)
 	if not character then
-		return 0, 0
+		return 0
 	end
 
-	local parts, grouped = 0, 0
+	local parts = 0
 	claim(character)
 	for _, desc in ipairs(character:GetDescendants()) do
 		if desc:IsA("BasePart") then
 			parts += 1
-			if claim(desc) then
-				grouped += 1
-			end
-		else
-			claim(desc)
 		end
+		claim(desc)
 	end
-	return parts, grouped
+	return parts
 end
 
--- True if anything about this character has drifted back to solid.
--- Cheap: stops at the first part that's wrong.
+-- True if anything about this character has drifted back: a solid part,
+-- or a name tag the server's spawn turned back on. Cheap: stops at the
+-- first thing that's wrong.
 local function needsReclaim(character)
 	for _, desc in ipairs(character:GetDescendants()) do
 		if desc:IsA("BasePart") then
 			if desc.CanCollide then
 				return true
 			end
-			if groupDeclared and CG.isRegistered(REMOTE_GROUP) and desc.CollisionGroup ~= REMOTE_GROUP then
+		elseif desc:IsA("Humanoid") then
+			if desc.DisplayDistanceType ~= Enum.HumanoidDisplayDistanceType.None then
 				return true
 			end
 		end
@@ -194,11 +188,11 @@ local function watch(player)
 		-- character appears is exactly when parts are streaming in.
 		descendantConns[player] = character.DescendantAdded:Connect(claim)
 
-		local parts, grouped = claimCharacter(character)
+		local parts = claimCharacter(character)
 
 		if DEBUG then
-			print(("[RemotePlayers] %s: %d parts, %d in the group, CanCollide off, transparency %.2f")
-				:format(player.Name, parts, grouped, TRANSPARENCY))
+			print(("[RemotePlayers] %s: %d parts, CanCollide off, name hidden, transparency %.2f")
+				:format(player.Name, parts, TRANSPARENCY))
 		end
 
 		-- The avatar keeps replacing parts for a moment after this, and a
@@ -234,6 +228,79 @@ Players.PlayerRemoving:Connect(function(player)
 		conn:Disconnect()
 		descendantConns[player] = nil
 	end
+end)
+
+-- Every physics step, before it runs: whatever their Humanoid (or
+-- anything else) switched back on since the last one goes off again
+-- before it can touch an orb. See "THE HUMANOID TURNS COLLISION BACK ON"
+-- in the header.
+local remoteParts = {} -- [player] = { BasePart, ... } for their current character
+
+local function collectParts(player, character)
+	local parts = {}
+	for _, desc in ipairs(character:GetDescendants()) do
+		if desc:IsA("BasePart") then
+			table.insert(parts, desc)
+		end
+	end
+	remoteParts[player] = parts
+end
+
+RunService.Stepped:Connect(function()
+	for player, parts in pairs(remoteParts) do
+		local character = player.Character
+		if not character or player.Parent == nil then
+			remoteParts[player] = nil
+		else
+			local stale = false
+			for _, part in ipairs(parts) do
+				if part.Parent == nil or not part:IsDescendantOf(character) then
+					stale = true
+				elseif part.CanCollide then
+					part.CanCollide = false
+				end
+			end
+			if stale then
+				collectParts(player, character)
+			end
+		end
+	end
+end)
+
+-- Kept current as parts come and go: a new character, and anything the
+-- avatar pipeline adds after it.
+local function trackCharacter(player, character)
+	collectParts(player, character)
+	character.DescendantAdded:Connect(function(desc)
+		if desc:IsA("BasePart") and player.Character == character then
+			local parts = remoteParts[player]
+			if parts then
+				table.insert(parts, desc)
+			end
+		end
+	end)
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+	if player ~= localPlayer then
+		player.CharacterAdded:Connect(function(character)
+			trackCharacter(player, character)
+		end)
+		if player.Character then
+			trackCharacter(player, player.Character)
+		end
+	end
+end
+Players.PlayerAdded:Connect(function(player)
+	if player == localPlayer then
+		return -- never your own character
+	end
+	player.CharacterAdded:Connect(function(character)
+		trackCharacter(player, character)
+	end)
+end)
+Players.PlayerRemoving:Connect(function(player)
+	remoteParts[player] = nil
 end)
 
 -- The backstop, forever. The server reassigns these characters on
